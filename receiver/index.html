@@ -1,0 +1,52 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline';" />
+  <title>RoadWarrior Receiver</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <h1>RoadWarrior Receiver</h1>
+    <div id="status-pill" class="pill idle">Idle</div>
+  </header>
+
+  <section class="panel">
+    <h2>Listener</h2>
+    <div class="grid">
+      <label>Listen Host
+        <input id="listenHost" type="text" />
+      </label>
+      <label>Listen Port
+        <input id="listenPort" type="number" />
+      </label>
+      <label>Ingest Path
+        <input id="ingestPath" type="text" />
+      </label>
+    </div>
+    <div class="actions">
+      <button id="saveBtn">Save</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Status</h2>
+    <div class="grid">
+      <div class="stat"><span>Listening</span><strong id="listening">No</strong></div>
+      <div class="stat"><span>Connected</span><strong id="connected">No</strong></div>
+      <div class="stat"><span>Last Sender IP</span><strong id="senderIp">-</strong></div>
+      <div class="stat"><span>Connection Duration</span><strong id="connDuration">-</strong></div>
+      <div class="stat"><span>Last Connection</span><strong id="lastConn">-</strong></div>
+      <div class="stat"><span>Server Error</span><strong id="serverError">-</strong></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Last Payload</h2>
+    <pre id="payload" class="payload">-</pre>
+  </section>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

@@ -1,0 +1,134 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: https://tile.openstreetmap.org https://*.basemaps.cartocdn.com https://server.arcgisonline.com https://services.arcgisonline.com; connect-src 'self' http://localhost http://127.0.0.1 http://10.215.100.169 https://www.cradlepointecm.com https://geocode.maps.co;" />
+  <title>RoadWarrior Map V2</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="../RWmapV2/styles.css" />
+</head>
+<body>
+  <header>
+    <div class="title">
+      <h1>RoadWarrior Map V2</h1>
+      <p>Local-first GPS with cloud fallback</p>
+    </div>
+    <div id="status-pill" class="pill idle">Idle</div>
+  </header>
+
+  <main>
+    <section class="panel map-panel">
+      <div class="panel-header">
+        <h2>Live Map</h2>
+        <div class="panel-actions">
+          <button id="mapFullscreenBtn" type="button">Fullscreen Map</button>
+        </div>
+      </div>
+      <div id="map" class="map"></div>
+      <div class="map-controls">
+        <div class="follow-control">
+          <label>
+            <input id="followToggle" type="checkbox" checked />
+            Follow
+          </label>
+          <input id="followZoom" type="range" min="3" max="18" step="1" value="13" />
+        </div>
+        <div class="style-control">
+          <label for="styleSelect">Style</label>
+          <select id="styleSelect">
+            <option value="Standard">Standard</option>
+            <option value="Clean">Clean</option>
+            <option value="Night">Night</option>
+            <option value="Satellite">Satellite</option>
+            <option value="Hybrid">Hybrid</option>
+          </select>
+        </div>
+      </div>
+      <div class="map-meta">
+        <div><span>Source</span><strong id="source">-</strong></div>
+        <div><span>Updated</span><strong id="updated">-</strong></div>
+        <div><span>Age</span><strong id="age">-</strong></div>
+        <div><span>Heading</span><strong id="heading">-</strong></div>
+        <div><span>Speed</span><strong id="speed">-</strong></div>
+        <div><span>Location</span><strong id="location">-</strong></div>
+        <div><span>Coordinates</span><strong id="coords">-</strong></div>
+      </div>
+    </section>
+
+    <section class="panel" id="configPanel">
+      <h2>Configuration</h2>
+      <div class="grid">
+        <label>Local Data URL
+          <input id="localDataUrl" type="text" />
+        </label>
+        <label>Local Failover Seconds
+          <input id="localFailoverSeconds" type="number" />
+        </label>
+        <label>Local Recheck Seconds
+          <input id="localRecheckSeconds" type="number" />
+        </label>
+        <label>Update Interval Seconds
+          <input id="updateIntervalSeconds" type="number" />
+        </label>
+        <label>Cloud Enabled
+          <select id="cloudEnabled">
+            <option value="true">Yes</option>
+            <option value="false">No</option>
+          </select>
+        </label>
+        <label>Cloud Stale Seconds
+          <input id="cloudStaleSeconds" type="number" />
+        </label>
+        <label>Cloud URL
+          <input id="cloudUrl" type="text" />
+        </label>
+        <label>Cloud API ID
+          <input id="cloudApiId" type="text" />
+        </label>
+        <label>Cloud API Key
+          <div class="input-with-toggle">
+            <input id="cloudApiKey" type="password" />
+            <button type="button" class="toggle-visibility" data-target="cloudApiKey">Show</button>
+          </div>
+        </label>
+        <label>Cloud ECM API ID
+          <input id="cloudEcmApiId" type="text" />
+        </label>
+        <label>Cloud ECM API Key
+          <div class="input-with-toggle">
+            <input id="cloudEcmApiKey" type="password" />
+            <button type="button" class="toggle-visibility" data-target="cloudEcmApiKey">Show</button>
+          </div>
+        </label>
+        <label>Cloud Referer
+          <input id="cloudReferer" type="text" />
+        </label>
+        <label>Cloud User-Agent
+          <input id="cloudUserAgent" type="text" />
+        </label>
+        <label>Geocode URL
+          <input id="geocodeUrl" type="text" />
+        </label>
+        <label>Geocode API Key
+          <div class="input-with-toggle">
+            <input id="geocodeApiKey" type="password" />
+            <button type="button" class="toggle-visibility" data-target="geocodeApiKey">Show</button>
+          </div>
+        </label>
+      </div>
+      <div class="actions">
+        <button id="saveBtn">Save Settings</button>
+      </div>
+      <div class="status-row">
+        <span>Local Status</span><strong id="localStatus">-</strong>
+      </div>
+      <div class="status-row">
+        <span>Last Error</span><strong id="lastError">-</strong>
+      </div>
+    </section>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="../RWmapV2/renderer.js"></script>
+</body>
+</html>

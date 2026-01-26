@@ -1,0 +1,42 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: https://tile.openstreetmap.org https://*.basemaps.cartocdn.com https://server.arcgisonline.com https://services.arcgisonline.com; connect-src 'self';" />
+  <title>RoadWarrior Map</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <main class="single">
+    <section class="panel">
+      <div id="map" class="map"></div>
+      <div class="status-overlay">
+        <div id="status-pill" class="pill idle">Offline</div>
+      </div>
+      <div class="map-controls">
+        <div class="follow-control">
+          <label>
+            <input id="followToggle" type="checkbox" checked />
+            Follow
+          </label>
+          <input id="followZoom" type="range" min="3" max="18" step="1" value="13" />
+        </div>
+        <div class="style-control">
+          <label for="styleSelect">Style</label>
+          <select id="styleSelect">
+            <option value="Standard">Standard</option>
+            <option value="Clean">Clean</option>
+            <option value="Night">Night</option>
+            <option value="Satellite">Satellite</option>
+            <option value="Hybrid">Hybrid</option>
+          </select>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
