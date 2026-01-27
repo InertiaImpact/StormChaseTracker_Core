@@ -7,6 +7,8 @@ const els = {
   speed: document.getElementById('speed'),
   location: document.getElementById('location'),
   coords: document.getElementById('coords'),
+  mapOverlayLocation: document.getElementById('mapOverlayLocation'),
+  mapOverlayHeading: document.getElementById('mapOverlayHeading'),
   followToggle: document.getElementById('followToggle'),
   followZoom: document.getElementById('followZoom'),
   styleSelect: document.getElementById('styleSelect'),
@@ -157,8 +159,21 @@ function setPill(status, label) {
 
 function formatLocation(data) {
   if (!data) return '-';
-  const parts = [data.streetName, data.townName, data.countyName].filter(Boolean);
+  const parts = [data.streetName, data.townName, data.countyName, data.stateName].filter(Boolean);
   return parts.length ? parts.join(', ') : '-';
+}
+
+function formatTownState(data) {
+  if (!data) return '-';
+  const parts = [data.townName, data.stateName].filter(Boolean);
+  return parts.length ? parts.join(', ') : '-';
+}
+
+function formatHeadingDirection(deg) {
+  if (typeof deg !== 'number' || Number.isNaN(deg)) return '-';
+  const directions = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW', 'N'];
+  const idx = Math.round((((deg % 360) + 360) % 360) / 45);
+  return directions[idx] || '-';
 }
 
 function updateMap(data) {
@@ -371,6 +386,8 @@ async function refreshIntellishiftVehicles() {
 function updateStatus(status) {
   const data = status.data || null;
   const age = status.dataAgeSeconds;
+  const sourceLabel = String(status.lastSource || '');
+  const sourceKey = sourceLabel.toLowerCase();
 
   els.source.textContent = status.lastSource || '-';
   els.updated.textContent = data?.updatedAtUnix ? formatTime(data.updatedAtUnix) : '-';
@@ -379,22 +396,29 @@ function updateStatus(status) {
   els.speed.textContent = data?.speedMph != null ? `${data.speedMph.toFixed(1)} mph` : '-';
   els.location.textContent = formatLocation(data);
   els.coords.textContent = data ? `${data.latitude.toFixed(6)}, ${data.longitude.toFixed(6)}` : '-';
+  if (els.mapOverlayLocation) {
+    els.mapOverlayLocation.textContent = `Near ${formatTownState(data)}`;
+  }
+  if (els.mapOverlayHeading) {
+    const headingLabel = formatHeadingDirection(data?.headingDeg);
+    els.mapOverlayHeading.textContent = `Heading ${headingLabel}`;
+  }
   if (status.useLocal) {
     els.localStatus.textContent = 'Primary (Edge)';
-  } else if (status.lastSource?.includes('Intellishift')) {
+  } else if (sourceKey.includes('intellishift')) {
     els.localStatus.textContent = 'Fallback (Intellishift)';
-  } else if (status.lastSource?.includes('NetCloud')) {
+  } else if (sourceKey.includes('netcloud')) {
     els.localStatus.textContent = 'Fallback (NetCloud)';
-  } else if (status.lastSource?.includes('Edge')) {
+  } else if (sourceKey.includes('edge')) {
     els.localStatus.textContent = 'Fallback (Edge)';
   } else {
     els.localStatus.textContent = 'Fallback';
   }
   els.lastError.textContent = status.lastError || '-';
 
-  if (data && status.isLive && status.lastSource?.includes('Edge')) setPill('edge', 'Edge');
-  else if (data && status.isLive && status.lastSource?.includes('NetCloud')) setPill('netcloud', 'NetCloud');
-  else if (data && status.isLive && status.lastSource?.includes('Intellishift')) setPill('intellishift', 'Intellishift');
+  if (data && status.isLive && sourceKey.includes('edge')) setPill('edge', 'Edge');
+  else if (data && status.isLive && sourceKey.includes('netcloud')) setPill('netcloud', 'NetCloud');
+  else if (data && status.isLive && sourceKey.includes('intellishift')) setPill('intellishift', 'Intellishift');
   else if (data && !status.isLive) setPill('stale', 'Stale');
   else setPill('offline', 'Offline');
 

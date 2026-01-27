@@ -448,15 +448,17 @@ async function fetchIntellishiftLocation(currentCfg, options = {}) {
     speedMph: typeof entry.speed === 'number' ? entry.speed : null,
     streetName: entry.street ?? null,
     townName: entry.city ?? null,
-    countyName: entry.state ?? null,
+    countyName: entry.county ?? null,
+    stateName: entry.state ?? null,
     source: 'IntellishiftConnectAPI'
   };
 
-  if (!payload.streetName || !payload.townName || !payload.countyName) {
+  if (!payload.streetName || !payload.townName || !payload.countyName || !payload.stateName) {
     const geo = await reverseGeocode(currentCfg, payload.latitude, payload.longitude);
     payload.streetName = payload.streetName ?? geo.streetName;
     payload.townName = payload.townName ?? geo.townName;
     payload.countyName = payload.countyName ?? geo.countyName;
+    payload.stateName = payload.stateName ?? geo.stateName;
   }
 
   return payload;
@@ -481,6 +483,7 @@ function normalizeLocalPayload(payload, lastUpdateUnix) {
     streetName: payload.street_name ?? null,
     townName: payload.town_name ?? null,
     countyName: payload.county_name ?? null,
+    stateName: payload.state_name ?? payload.state ?? null,
     source: 'EdgeReceiver'
   };
 }
@@ -509,12 +512,13 @@ async function reverseGeocode(currentCfg, latitude, longitude) {
     const result = {
       streetName: address.road ?? null,
       townName: address.town ?? address.city ?? null,
-      countyName: address.county ?? null
+      countyName: address.county ?? null,
+      stateName: address.state ?? address.state_code ?? null
     };
     reverseCache.set(cacheKey, result);
     return result;
   } catch {
-    const result = { streetName: 'Unspecified Area', townName: null, countyName: null };
+    const result = { streetName: 'Unspecified Area', townName: null, countyName: null, stateName: null };
     reverseCache.set(cacheKey, result);
     return result;
   }

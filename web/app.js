@@ -10,7 +10,9 @@ const els = {
   statusPill: document.getElementById('status-pill'),
   followToggle: document.getElementById('followToggle'),
   followZoom: document.getElementById('followZoom'),
-  styleSelect: document.getElementById('styleSelect')
+  styleSelect: document.getElementById('styleSelect'),
+  mapOverlayLocation: document.getElementById('mapOverlayLocation'),
+  mapOverlayHeading: document.getElementById('mapOverlayHeading')
 };
 
 // ========== MAP CONFIGURATION ==========
@@ -98,6 +100,19 @@ function setPill(status, label) {
   els.statusPill.textContent = label;
 }
 
+function formatTownState(data) {
+  if (!data) return '-';
+  const parts = [data.townName, data.stateName].filter(Boolean);
+  return parts.length ? parts.join(', ') : '-';
+}
+
+function formatHeadingDirection(deg) {
+  if (typeof deg !== 'number' || Number.isNaN(deg)) return '-';
+  const directions = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW', 'N'];
+  const idx = Math.round((((deg % 360) + 360) % 360) / 45);
+  return directions[idx] || '-';
+}
+
 // ========== DATA SOURCE CONFIG ==========
 function updateMap(data) {
   if (!data) return;
@@ -124,10 +139,21 @@ function updateMap(data) {
 
 function updateStatus(status) {
   const data = status.data || null;
+  const sourceKey = String(status.lastSource || '').toLowerCase();
 
-  if (data && status.isLive && status.lastSource?.includes('Edge')) setPill('ok', 'Live');
-  else if (data && status.isLive && status.lastSource?.includes('NetCloud')) setPill('warn', 'Live NetCloud');
+  if (data && status.isLive && sourceKey.includes('edge')) setPill('ok', 'Live');
+  else if (data && status.isLive && sourceKey.includes('netcloud')) setPill('warn', 'Live NetCloud');
+  else if (data && status.isLive && sourceKey.includes('intellishift')) setPill('warn', 'Live Intellishift');
+  else if (data && !status.isLive) setPill('warn', 'Stale');
   else setPill('offline', 'Offline');
+
+  if (els.mapOverlayLocation) {
+    els.mapOverlayLocation.textContent = `Near ${formatTownState(data)}`;
+  }
+  if (els.mapOverlayHeading) {
+    const headingLabel = formatHeadingDirection(data?.headingDeg);
+    els.mapOverlayHeading.textContent = `Heading ${headingLabel}`;
+  }
 
   updateMap(data);
 }

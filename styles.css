@@ -78,6 +78,7 @@ main {
   box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
   display: flex;
   flex-direction: column;
+  position: relative;
 }
 
 .panel h2 {
@@ -117,6 +118,28 @@ main {
 
 .map-panel {
   position: relative;
+}
+
+.map-overlay {
+  position: absolute;
+  top: 64px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(11, 18, 32, 0.82);
+  color: #fff;
+  padding: 8px 14px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  display: grid;
+  gap: 4px;
+  text-align: center;
+  z-index: 950;
+  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.25);
+}
+
+.map-overlay .overlay-line {
+  line-height: 1.2;
 }
 
 .map-controls {
