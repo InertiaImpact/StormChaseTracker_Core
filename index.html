@@ -2,133 +2,169 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: https://tile.openstreetmap.org https://*.basemaps.cartocdn.com https://server.arcgisonline.com https://services.arcgisonline.com; connect-src 'self' http://localhost http://127.0.0.1 http://10.215.100.169 https://www.cradlepointecm.com https://geocode.maps.co;" />
-  <title>RoadWarrior Map V2</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="../RWmapV2/styles.css" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline';" />
+  <title>RoadWarrior Sender</title>
+  <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <header>
-    <div class="title">
-      <h1>RoadWarrior Map V2</h1>
-      <p>Local-first GPS with cloud fallback</p>
+    <h1>RoadWarrior Sender</h1>
+    <div class="status-pills">
+      <div id="gps-pill" class="pill idle">GPS</div>
+      <div id="wx-pill" class="pill idle">WX</div>
+      <div id="status-pill" class="pill idle">Idle</div>
     </div>
-    <div id="status-pill" class="pill idle">Idle</div>
   </header>
 
-  <main>
-    <section class="panel map-panel">
-      <div class="panel-header">
-        <h2>Live Map</h2>
-        <div class="panel-actions">
-          <button id="mapFullscreenBtn" type="button">Fullscreen Map</button>
-        </div>
+  <section class="panel">
+    <h2>Send Target</h2>
+    <div class="grid">
+      <label>Target URL
+        <input id="targetUrl" type="text" placeholder="http://host/ingest" />
+      </label>
+      <label>Device ID
+        <input id="deviceId" type="text" />
+      </label>
+      <label>Send Interval (ms)
+        <input id="sendIntervalMs" type="number" min="250" step="50" />
+      </label>
+      <div class="toggle-field">
+        <span>Autostart Sending</span>
+        <label class="toggle">
+          <input id="autoStart" type="checkbox" />
+          <span class="slider"></span>
+        </label>
       </div>
-      <div id="map" class="map"></div>
-      <div class="map-controls">
-        <div class="follow-control">
-          <label>
-            <input id="followToggle" type="checkbox" checked />
-            Follow
-          </label>
-          <input id="followZoom" type="range" min="3" max="18" step="1" value="13" />
-        </div>
-        <div class="style-control">
-          <label for="styleSelect">Style</label>
-          <select id="styleSelect">
-            <option value="Standard">Standard</option>
-            <option value="Clean">Clean</option>
-            <option value="Night">Night</option>
-            <option value="Satellite">Satellite</option>
-            <option value="Hybrid">Hybrid</option>
-          </select>
-        </div>
-      </div>
-      <div class="map-meta">
-        <div><span>Source</span><strong id="source">-</strong></div>
-        <div><span>Updated</span><strong id="updated">-</strong></div>
-        <div><span>Age</span><strong id="age">-</strong></div>
-        <div><span>Heading</span><strong id="heading">-</strong></div>
-        <div><span>Speed</span><strong id="speed">-</strong></div>
-        <div><span>Location</span><strong id="location">-</strong></div>
-        <div><span>Coordinates</span><strong id="coords">-</strong></div>
-      </div>
-    </section>
+    </div>
+    <div class="actions">
+      <button id="saveBtn" class="primary"><span class="icon">💾</span> Save</button>
+      <button id="startBtn">Start Sending</button>
+      <button id="stopBtn" class="secondary">Stop</button>
+    </div>
+  </section>
 
-    <section class="panel" id="configPanel">
-      <h2>Configuration</h2>
-      <div class="grid">
-        <label>Local Data URL
-          <input id="localDataUrl" type="text" />
-        </label>
-        <label>Local Failover Seconds
-          <input id="localFailoverSeconds" type="number" />
-        </label>
-        <label>Local Recheck Seconds
-          <input id="localRecheckSeconds" type="number" />
-        </label>
-        <label>Update Interval Seconds
-          <input id="updateIntervalSeconds" type="number" />
-        </label>
-        <label>Cloud Enabled
-          <select id="cloudEnabled">
-            <option value="true">Yes</option>
-            <option value="false">No</option>
-          </select>
-        </label>
-        <label>Cloud Stale Seconds
-          <input id="cloudStaleSeconds" type="number" />
-        </label>
-        <label>Cloud URL
-          <input id="cloudUrl" type="text" />
-        </label>
-        <label>Cloud API ID
-          <input id="cloudApiId" type="text" />
-        </label>
-        <label>Cloud API Key
-          <div class="input-with-toggle">
-            <input id="cloudApiKey" type="password" />
-            <button type="button" class="toggle-visibility" data-target="cloudApiKey">Show</button>
-          </div>
-        </label>
-        <label>Cloud ECM API ID
-          <input id="cloudEcmApiId" type="text" />
-        </label>
-        <label>Cloud ECM API Key
-          <div class="input-with-toggle">
-            <input id="cloudEcmApiKey" type="password" />
-            <button type="button" class="toggle-visibility" data-target="cloudEcmApiKey">Show</button>
-          </div>
-        </label>
-        <label>Cloud Referer
-          <input id="cloudReferer" type="text" />
-        </label>
-        <label>Cloud User-Agent
-          <input id="cloudUserAgent" type="text" />
-        </label>
-        <label>Geocode URL
-          <input id="geocodeUrl" type="text" />
-        </label>
-        <label>Geocode API Key
-          <div class="input-with-toggle">
-            <input id="geocodeApiKey" type="password" />
-            <button type="button" class="toggle-visibility" data-target="geocodeApiKey">Show</button>
-          </div>
-        </label>
-      </div>
-      <div class="actions">
-        <button id="saveBtn">Save Settings</button>
-      </div>
-      <div class="status-row">
-        <span>Local Status</span><strong id="localStatus">-</strong>
-      </div>
-      <div class="status-row">
-        <span>Last Error</span><strong id="lastError">-</strong>
-      </div>
-    </section>
-  </main>
+  <section class="panel">
+    <h2>NMEA Source</h2>
+    <div class="grid">
+      <label>Enabled
+        <select id="nmeaEnabled">
+          <option value="true">Yes</option>
+          <option value="false">No</option>
+        </select>
+      </label>
+      <label>Protocol
+        <select id="nmeaProtocol">
+          <option value="udp">UDP</option>
+          <option value="tcp">TCP</option>
+        </select>
+      </label>
+      <label>Source Host (optional)
+        <input id="nmeaHost" type="text" placeholder="10.0.0.1" />
+      </label>
+      <label>Port
+        <input id="nmeaPort" type="number" />
+      </label>
+      <div class="separator"></div>
+      <label class="full">GPS Dummy
+        <select id="gpsDummyMode">
+          <option value="off">Off</option>
+          <option value="route">Route</option>
+          <option value="static">Static</option>
+        </select>
+      </label>
+    </div>
+  </section>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="../RWmapV2/renderer.js"></script>
+  <section class="panel">
+    <h2>Weather Sensor (Airmar 200WX)</h2>
+    <div class="grid">
+      <label>Enabled
+        <select id="weatherEnabled">
+          <option value="false">No</option>
+          <option value="true">Yes</option>
+        </select>
+      </label>
+      <label>Port
+        <select id="weatherPort">
+          <option value="">Select port</option>
+        </select>
+      </label>
+      <label>Baud
+        <select id="weatherBaud">
+          <option value="4800">4800</option>
+          <option value="9600">9600</option>
+          <option value="19200">19200</option>
+          <option value="38400">38400</option>
+          <option value="57600">57600</option>
+          <option value="115200">115200</option>
+        </select>
+      </label>
+      <div class="separator"></div>
+      <label class="full">Dummy Data
+        <select id="weatherDummyMode">
+          <option value="off">Off</option>
+          <option value="calm">Calm</option>
+          <option value="storm">Storm</option>
+          <option value="sweep">Sweeping Test</option>
+        </select>
+      </label>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Sender Health</h2>
+    <div class="grid">
+      <div class="stat"><span>Sender Connected</span><strong id="connected">No</strong></div>
+      <div class="stat"><span>Internal Target</span><strong id="targetHost">-</strong></div>
+      <div class="stat"><span>Connected Duration</span><strong id="connDuration">-</strong></div>
+      <div class="stat"><span>Last Internal Connection</span><strong id="lastConn">-</strong></div>
+      <div class="stat"><span>Last Send Status</span><strong id="lastSendStatus">-</strong></div>
+      <div class="stat"><span>Last Send Error</span><strong id="lastSendError">-</strong></div>
+      <div class="stat"><span>NMEA Connected</span><strong id="nmeaConnected">No</strong></div>
+      <div class="stat"><span>NMEA Source</span><strong id="nmeaSource">-</strong></div>
+      <div class="stat"><span>Last NMEA</span><strong id="lastNmea">-</strong></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Decoded GPS</h2>
+    <div class="grid">
+      <div class="stat"><span>Fix</span><strong id="fix">-</strong></div>
+      <div class="stat"><span>Latitude</span><strong id="lat">-</strong></div>
+      <div class="stat"><span>Longitude</span><strong id="lon">-</strong></div>
+      <div class="stat"><span>Heading</span><strong id="heading">-</strong></div>
+      <div class="stat"><span>Speed</span><strong id="speed">-</strong></div>
+      <div class="stat"><span>Sats</span><strong id="sats">-</strong></div>
+      <div class="stat"><span>HDOP</span><strong id="hdop">-</strong></div>
+      <div class="stat"><span>Altitude</span><strong id="alt">-</strong></div>
+      <div class="stat"><span>NMEA Enabled</span><strong id="nmeaCfgEnabled">-</strong></div>
+      <div class="stat"><span>NMEA Protocol</span><strong id="nmeaCfgProtocol">-</strong></div>
+      <div class="stat"><span>NMEA Host</span><strong id="nmeaCfgHost">-</strong></div>
+      <div class="stat"><span>NMEA Port</span><strong id="nmeaCfgPort">-</strong></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Weather Status</h2>
+    <div class="grid">
+      <div class="stat"><span>Port</span><strong id="wxPort">-</strong></div>
+      <div class="stat"><span>Baud</span><strong id="wxBaud">-</strong></div>
+      <div class="stat"><span>Last Weather</span><strong id="wxLast">-</strong></div>
+      <div class="stat"><span>Air Temp</span><strong id="wxTa">-</strong></div>
+      <div class="stat"><span>Humidity</span><strong id="wxUa">-</strong></div>
+      <div class="stat"><span>Pressure</span><strong id="wxPa">-</strong></div>
+      <div class="stat"><span>Wind Speed</span><strong id="wxSx">-</strong></div>
+      <div class="stat"><span>Wind Dir</span><strong id="wxDx">-</strong></div>
+      <div class="stat"><span>Rain</span><strong id="wxRc">-</strong></div>
+      <div class="stat"><span>Peak Gust</span><strong id="wxWh">-</strong></div>
+      <div class="stat"><span>Wind Chill</span><strong id="wxWc">-</strong></div>
+      <div class="stat"><span>Heat Index</span><strong id="wxHj">-</strong></div>
+      <div class="stat"><span>Dew Point</span><strong id="wxDp">-</strong></div>
+    </div>
+  </section>
+
+  <div id="saveBanner" class="save-banner hidden">Unsaved changes — click to save</div>
+
+  <script src="renderer.js"></script>
 </body>
 </html>

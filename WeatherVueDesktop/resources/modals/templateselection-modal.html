@@ -1,0 +1,128 @@
+<style>
+.template-selection-button {
+	min-width: 160px;
+}
+.template-selection-button-label {
+	font-weight: bold;
+	margin-left: 10px;
+}
+</style>
+
+<div class="modal fade" style="color: black;" id="templateSelectionModal" tabindex="-1" role="dialog" aria-labelledby="templateSelectionModalLabel" aria-hidden="true">
+	<div class="modal-dialog" style="width: 700px;">
+		<div class="modal-content">
+			<div class="modal-header">
+				<div class="row">
+					<div class="col-sm-8">
+						<h4>Template Selection</h4>					
+					</div>
+					<div class="col-sm-4">
+						<button type="button" class="close" style="margin-top: 5px;" data-dismiss="modal" aria-hidden="true">&times;</button>
+					</div>
+				</div>
+			</div>
+			<div class="modal-body">
+				<div class="row">
+					<div class="col-sm-12 text-center">					
+						<div class="btn-group" data-toggle="buttons">
+							<label id="lblOption0" class="btn btn-default active template-selection-button" onclick="templateSelectionModal_SetType(0);">
+								<input type="radio" name="options" id="option0"><img src='./resources/img/dashboard.png' style='height:50px;' /><span class="template-selection-button-label">Summary</span>
+							</label>						
+							<label id="lblOption2" class="btn btn-default template-selection-button" onclick="templateSelectionModal_SetType(2);">
+								<input type="radio" name="options" id="option2"><img src='./resources/img/temp.png' style='height:50px;' /><span class="template-selection-button-label">Temp</span>
+							</label>							
+							<label id="lblOption1" class="btn btn-default template-selection-button" onclick="templateSelectionModal_SetType(1);">
+								<input type="radio" name="options" id="option1"><img src='./resources/img/rainfall.png' style='height:50px;' /><span class="template-selection-button-label">Rainfall</span>
+							</label>
+							<label id="lblOption3" class="btn btn-default template-selection-button" onclick="templateSelectionModal_SetType(3);">
+								<input type="radio" name="options" id="option3"><img src='./resources/img/wind2.png' style='height:50px;' /><span class="template-selection-button-label">Winds</span>
+							</label>							
+						</div>
+					</div>
+				</div>
+				<div id="divImageSelection" class="row hidden" style="margin-top: 20px;">
+					<div class="col-sm-3"></div>
+					<div class="col-sm-6 text-center">
+						<label>Current Condition Image</label>
+						<select class="form-control" id="templateSelectionModal_ImageSelection">
+							<option value='0' selected>None</option>
+							<option value='./resources/img/wxicons/Cloud Partly Cloudy.png'>Cloud Partly Cloudy</option>
+							<option value='./resources/img/wxicons/Cloudy.png'>Cloudy</option>
+							<option value='./resources/img/wxicons/Fire Flames.png'>Fire Flames</option>
+							<option value='./resources/img/wxicons/Fog.png'>Fog</option>
+							<option value='./resources/img/wxicons/Freezing Rain.png'>Freezing Rain</option>
+							<option value='./resources/img/wxicons/Hurricane Cat 1.png'>Hurricane Category 1</option>
+							<option value='./resources/img/wxicons/Hurricane Cat 2.png'>Hurricane Category 2</option>
+							<option value='./resources/img/wxicons/Hurricane Cat 3.png'>Hurricane Category 3</option>
+							<option value='./resources/img/wxicons/Hurricane Cat 4.png'>Hurricane Category 4</option>
+							<option value='./resources/img/wxicons/Hurricane Cat 5.png'>Hurricane Category 5</option>
+							<option value='./resources/img/wxicons/Hyrricane Symbol.png'>Hurricane Symbol</option>
+							<option value='./resources/img/wxicons/Mostly Cloudy.png'>Mostly Cloudy</option>
+							<option value='./resources/img/wxicons/Mostly Cloudy Rain Moderate.png'>Mostly Cloudy Rain Moderate</option>
+							<option value='./resources/img/wxicons/Mostly Cloudy Rain Snow Mix.png'>Mostly Cloudy Rain Snow Mix</option>
+							<option value='./resources/img/wxicons/Mostly Cloudy Snow Single Flake.png'>Mostly Cloudy Snow Single Flake</option>
+							<option value='./resources/img/wxicons/Mostly Cloudy T Storm Dry.png'>Mostly Cloudy Thunderstorm Dry</option>
+							<option value='./resources/img/wxicons/Mostly Cloudy T Storm Rain.png'>Mostly Cloudy Thunderstorm Rain</option>
+							<option value='./resources/img/wxicons/Mostly Cloudy Wintry Mix.png'>Mostly Cloudy Wintry Mix</option>
+							<option value='./resources/img/wxicons/Rain Moderate.png'>Rain Moderate</option>
+							<option value='./resources/img/wxicons/Rain Snow Mix.png'>Rain Snow Mix</option>
+							<option value='./resources/img/wxicons/Snow Moderate.png'>Snow Moderate</option>
+							<option value='./resources/img/wxicons/Sunny.png'>Sunny</option>
+							<option value='./resources/img/wxicons/Thunderstorm Rain.png'>Thunderstorm Rain</option>
+							<option value='./resources/img/wxicons/Wintry Mix.png'>Wintry Mix</option>
+						</select>
+					</div>
+					<div class="col-sm-3"></div>
+				</div>	
+			</div>
+			<div class="modal-footer">
+				<button id="templateSelectionModal_CancelButton" type="button" class="btn btn-danger" onclick="templateSelectionModal_Cancel();">Cancel</button>
+				<button id="templateSelectionModal_OkButton" type="button" class="btn btn-success" onclick="templateSelectionModal_OK();">OK</button>
+			</div>				
+		</div>
+		<!-- /.modal-content -->
+	</div>
+	<!-- /.modal-dialog -->
+</div>
+
+<script>
+var templateSelectionModal_Type = 0;
+var templateSelectionModal_InitialType = 0;
+var templateSelectionModal_InitialImage = '';
+
+window.templateSelectionModal_Init = function(type, image)
+{
+	templateSelectionModal_InitialType = type;
+	templateSelectionModal_InitialImage = image;
+	templateSelectionModal_SetType(type);
+	$('#templateSelectionModal_ImageSelection').val(image);
+	$('#lblOption0').removeClass('active');
+	$('#lblOption' + type).addClass('active');
+}
+
+window.templateSelectionModal_SetType = function(type)
+{
+	templateSelectionModal_Type = type;
+	
+	if (type == 2)
+	{
+		$('#divImageSelection').removeClass('hidden');
+	}
+	else
+	{
+		$('#divImageSelection').addClass('hidden');
+	}
+}
+
+window.templateSelectionModal_Cancel = function()
+{
+	window.loadTemplate(templateSelectionModal_InitialType, templateSelectionModal_InitialImage);
+	$('#templateSelectionModal').modal('hide');
+}
+
+window.templateSelectionModal_OK = function()
+{
+	window.loadTemplate(templateSelectionModal_Type, $('#templateSelectionModal_ImageSelection').val());
+	$('#templateSelectionModal').modal('hide');
+}
+</script>
