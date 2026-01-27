@@ -1,103 +1,123 @@
 const els = {
-  targetUrl: document.getElementById('targetUrl'),
-  deviceId: document.getElementById('deviceId'),
-  sendIntervalMs: document.getElementById('sendIntervalMs'),
-  autoStart: document.getElementById('autoStart'),
-  gpsDummyMode: document.getElementById('gpsDummyMode'),
-  nmeaProtocol: document.getElementById('nmeaProtocol'),
-  nmeaHost: document.getElementById('nmeaHost'),
-  nmeaPort: document.getElementById('nmeaPort'),
-  nmeaEnabled: document.getElementById('nmeaEnabled'),
-  weatherEnabled: document.getElementById('weatherEnabled'),
-  weatherPort: document.getElementById('weatherPort'),
-  weatherBaud: document.getElementById('weatherBaud'),
-  weatherDummyMode: document.getElementById('weatherDummyMode'),
-  saveBtn: document.getElementById('saveBtn'),
-  startBtn: document.getElementById('startBtn'),
-  stopBtn: document.getElementById('stopBtn'),
   statusPill: document.getElementById('status-pill'),
-  gpsPill: document.getElementById('gps-pill'),
-  wxPill: document.getElementById('wx-pill'),
-  connected: document.getElementById('connected'),
-  targetHost: document.getElementById('targetHost'),
-  connDuration: document.getElementById('connDuration'),
-  lastConn: document.getElementById('lastConn'),
-  lastSendStatus: document.getElementById('lastSendStatus'),
-  lastSendError: document.getElementById('lastSendError'),
-  nmeaConnected: document.getElementById('nmeaConnected'),
-  nmeaSource: document.getElementById('nmeaSource'),
-  lastNmea: document.getElementById('lastNmea'),
-  nmeaCfgEnabled: document.getElementById('nmeaCfgEnabled'),
-  nmeaCfgProtocol: document.getElementById('nmeaCfgProtocol'),
-  nmeaCfgHost: document.getElementById('nmeaCfgHost'),
-  nmeaCfgPort: document.getElementById('nmeaCfgPort'),
-  fix: document.getElementById('fix'),
-  lat: document.getElementById('lat'),
-  lon: document.getElementById('lon'),
+  source: document.getElementById('source'),
+  updated: document.getElementById('updated'),
+  age: document.getElementById('age'),
   heading: document.getElementById('heading'),
   speed: document.getElementById('speed'),
-  sats: document.getElementById('sats'),
-  hdop: document.getElementById('hdop'),
-  alt: document.getElementById('alt'),
-  wxPort: document.getElementById('wxPort'),
-  wxBaud: document.getElementById('wxBaud'),
-  wxLast: document.getElementById('wxLast'),
-  wxTa: document.getElementById('wxTa'),
-  wxUa: document.getElementById('wxUa'),
-  wxPa: document.getElementById('wxPa'),
-  wxSx: document.getElementById('wxSx'),
-  wxDx: document.getElementById('wxDx'),
-  wxRc: document.getElementById('wxRc'),
-  wxWh: document.getElementById('wxWh'),
-  wxWc: document.getElementById('wxWc'),
-  wxHj: document.getElementById('wxHj'),
-  wxDp: document.getElementById('wxDp'),
-  saveBanner: document.getElementById('saveBanner')
+  location: document.getElementById('location'),
+  coords: document.getElementById('coords'),
+  localDataUrl: document.getElementById('localDataUrl'),
+  localFailoverSeconds: document.getElementById('localFailoverSeconds'),
+  localRecheckSeconds: document.getElementById('localRecheckSeconds'),
+  updateIntervalSeconds: document.getElementById('updateIntervalSeconds'),
+  cloudEnabled: document.getElementById('cloudEnabled'),
+  cloudStaleSeconds: document.getElementById('cloudStaleSeconds'),
+  cloudUrl: document.getElementById('cloudUrl'),
+  cloudApiId: document.getElementById('cloudApiId'),
+  cloudApiKey: document.getElementById('cloudApiKey'),
+  cloudEcmApiId: document.getElementById('cloudEcmApiId'),
+  cloudEcmApiKey: document.getElementById('cloudEcmApiKey'),
+  cloudReferer: document.getElementById('cloudReferer'),
+  cloudUserAgent: document.getElementById('cloudUserAgent'),
+  geocodeUrl: document.getElementById('geocodeUrl'),
+  geocodeApiKey: document.getElementById('geocodeApiKey'),
+  saveBtn: document.getElementById('saveBtn'),
+  localStatus: document.getElementById('localStatus'),
+  lastError: document.getElementById('lastError'),
+  configPanel: document.getElementById('configPanel'),
+  mapFullscreenBtn: document.getElementById('mapFullscreenBtn')
 };
 
-let isDirty = false;
-let lastConfig = null;
+let map = null;
+let marker = null;
+let mapFullscreen = false;
+let baseLayers = null;
+let activeBaseLayer = null;
+let visibilityButtons = null;
+let followEnabled = true;
+let followZoomValue = 13;
+let lastPosition = null;
+let styleSelect = null;
 
-function setDirty(dirty) {
-  isDirty = dirty;
-  if (isDirty) els.saveBanner.classList.remove('hidden');
-  else els.saveBanner.classList.add('hidden');
+function initMap() {
+  map = L.map('map', { zoomControl: false }).setView([42.0277, -91.6408], 12);
+  const standard = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap'
+  });
+  const clean = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+    maxZoom: 20,
+    subdomains: 'abcd',
+    attribution: '&copy; OpenStreetMap &copy; CARTO'
+  });
+  const night = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    maxZoom: 20,
+    subdomains: 'abcd',
+    attribution: '&copy; OpenStreetMap &copy; CARTO'
+  });
+  const satellite = L.tileLayer(
+    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    {
+      maxZoom: 19,
+      attribution: 'Tiles &copy; Esri'
+    }
+  );
+  const hybridBase = L.tileLayer(
+    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    {
+      maxZoom: 19,
+      attribution: 'Tiles &copy; Esri'
+    }
+  );
+  const hybridRoads = L.tileLayer(
+    'https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}',
+    {
+      maxZoom: 19,
+      attribution: 'Roads &copy; Esri'
+    }
+  );
+  const hybridLabels = L.tileLayer(
+    'https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+    {
+      maxZoom: 19,
+      attribution: 'Labels &copy; Esri'
+    }
+  );
+  const hybrid = L.layerGroup([hybridBase, hybridRoads, hybridLabels]);
+
+  baseLayers = {
+    Standard: standard,
+    Clean: clean,
+    Night: night,
+    Satellite: satellite,
+    Hybrid: hybrid
+  };
+
+  activeBaseLayer = standard;
+  activeBaseLayer.addTo(map);
+
+  map.on('zoomend', () => {
+    const zoom = map.getZoom();
+    if (Number.isFinite(zoom)) {
+      followZoomValue = zoom;
+      if (els.followZoom) els.followZoom.value = String(zoom);
+    }
+  });
 }
 
-function formatDuration(ms) {
-  if (!ms) return '-';
-  const total = Math.floor(ms / 1000);
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  return `${h}h ${m}m ${s}s`;
+function createHeadingIcon(deg) {
+  const rotation = typeof deg === 'number' ? deg : 0;
+  return L.divIcon({
+    className: 'heading-icon',
+    html: `<div class="arrow" style="transform: rotate(${rotation}deg)"></div>`
+  });
 }
 
-function formatTime(ts) {
-  if (!ts) return '-';
-  const d = new Date(ts);
-  return d.toLocaleString();
-}
-
-function setSelectOptions(el, values, current) {
-  const seen = new Set();
-  const uniq = [];
-  for (const v of values) {
-    const value = v.value ?? v;
-    if (seen.has(value)) continue;
-    seen.add(value);
-    uniq.push(v);
-  }
-  el.innerHTML = '';
-  for (const v of uniq) {
-    const opt = document.createElement('option');
-    opt.value = v.value ?? v;
-    opt.textContent = v.label ?? v;
-    el.appendChild(opt);
-  }
-  if (current && uniq.some((v) => (v.value ?? v) === current)) {
-    el.value = current;
-  }
+function formatTime(unixSeconds) {
+  if (!unixSeconds) return '-';
+  const date = new Date(unixSeconds * 1000);
+  return date.toLocaleString();
 }
 
 function setPill(status, label) {
@@ -105,184 +125,164 @@ function setPill(status, label) {
   els.statusPill.textContent = label;
 }
 
-function setSmallPill(el, status, label) {
-  el.className = `pill ${status}`;
-  el.textContent = label;
+function formatLocation(data) {
+  if (!data) return '-';
+  const parts = [data.streetName, data.townName, data.countyName].filter(Boolean);
+  return parts.length ? parts.join(', ') : '-';
 }
 
-function updateStatus(data) {
-  els.connected.textContent = data.connected ? 'Yes' : 'No';
-  els.targetHost.textContent = data.targetHost || '-';
-  els.connDuration.textContent = formatDuration(data.connectionDurationMs);
-  els.lastConn.textContent = formatTime(data.lastConnection);
-  els.lastSendStatus.textContent = data.lastSendStatus != null ? data.lastSendStatus : '-';
-  els.lastSendError.textContent = data.lastSendError || '-';
-  els.nmeaConnected.textContent = data.nmeaConnected ? 'Yes' : 'No';
-  els.nmeaSource.textContent = data.lastNmeaSource || '-';
-  els.lastNmea.textContent = formatTime(data.lastNmeaAt);
+function updateMap(data) {
+  if (!data) return;
+  const lat = data.latitude;
+  const lon = data.longitude;
+  if (typeof lat !== 'number' || typeof lon !== 'number') return;
 
-  const nc = data.nmeaConfig || {};
-  els.nmeaCfgEnabled.textContent = nc.enabled ? 'Yes' : 'No';
-  els.nmeaCfgProtocol.textContent = nc.protocol || '-';
-  els.nmeaCfgHost.textContent = nc.host || '-';
-  els.nmeaCfgPort.textContent = nc.port ? `${nc.port}` : '-';
+  if (!map) initMap();
 
-  const n = data.nmea || {};
-  els.fix.textContent = n.fixValid ? 'VALID' : 'NO-FIX';
-  els.lat.textContent = n.lat != null ? n.lat.toFixed(6) : '-';
-  els.lon.textContent = n.lon != null ? n.lon.toFixed(6) : '-';
-  els.heading.textContent = n.courseT != null ? `${n.courseT.toFixed(1)}°` : '-';
-  els.speed.textContent = n.speedMph != null ? `${n.speedMph.toFixed(1)} mph` : '-';
-  els.sats.textContent = n.sats != null ? n.sats : '-';
-  els.hdop.textContent = n.hdop != null ? n.hdop.toFixed(1) : '-';
-  els.alt.textContent = n.altM != null ? `${n.altM.toFixed(1)} m` : '-';
+  lastPosition = [lat, lon];
 
-  const w = data.weather || {};
-  const wd = w.data || {};
-  const valid = (v) => v != null && v !== -999 && Number.isFinite(v);
-  const numFmt = (v, digits, suffix = '') => (valid(v) ? `${v.toFixed(digits)}${suffix}` : '-');
-
-  const savedPort = lastConfig && lastConfig.weatherPort ? lastConfig.weatherPort : '';
-  const savedBaud = lastConfig && lastConfig.weatherBaud ? lastConfig.weatherBaud : '4800';
-  const currentPort = els.weatherPort.value || savedPort || '';
-  const currentBaud = els.weatherBaud.value || savedBaud || '4800';
-  const portOptions = [
-    { value: '', label: 'Select port' },
-    ...((w.availablePorts || []).map((p) => ({ value: p, label: p })))
-  ];
-  const baudOptions = [
-    { value: '4800', label: '4800' },
-    { value: '9600', label: '9600' },
-    { value: '19200', label: '19200' },
-    { value: '38400', label: '38400' },
-    { value: '57600', label: '57600' },
-    { value: '115200', label: '115200' }
-  ];
-
-  if (currentPort && !portOptions.some((o) => o.value === currentPort)) {
-    portOptions.push({ value: currentPort, label: `Saved (${currentPort})` });
-  }
-  if (currentBaud && !baudOptions.some((o) => o.value === currentBaud)) {
-    baudOptions.push({ value: currentBaud, label: `Saved (${currentBaud})` });
+  if (!marker) {
+    marker = L.marker([lat, lon], { icon: createHeadingIcon(data.headingDeg) }).addTo(map);
+    map.setView([lat, lon], followZoomValue, { animate: true, duration: 0.6 });
+  } else {
+    marker.setLatLng([lat, lon]);
+    marker.setIcon(createHeadingIcon(data.headingDeg));
   }
 
-  setSelectOptions(els.weatherPort, portOptions, currentPort);
-  setSelectOptions(els.weatherBaud, baudOptions, currentBaud);
+  if (followEnabled) {
+    map.setView([lat, lon], followZoomValue, { animate: true, duration: 0.6 });
+  }
+}
 
-  els.wxPort.textContent = w.port || '-';
-  els.wxBaud.textContent = w.baud ? `${w.baud}` : '-';
-  els.wxLast.textContent = formatTime(w.lastSerialAt);
-  els.wxTa.textContent = numFmt(wd.Ta, 1, ' °F');
-  els.wxUa.textContent = numFmt(wd.Ua, 0, ' %');
-  els.wxPa.textContent = numFmt(wd.Pa, 3, ' inHg');
-  els.wxSx.textContent = numFmt(wd.Sx, 1, ' mph');
-  els.wxDx.textContent = numFmt(wd.Dx, 0, '°');
-  els.wxRc.textContent = numFmt(wd.Rc, 2, ' in');
-  els.wxWh.textContent = numFmt(wd.Wh, 1, ' mph');
-  els.wxWc.textContent = numFmt(wd.Wc, 1, ' °F');
-  els.wxHj.textContent = numFmt(wd.Hj, 1, ' °F');
-  els.wxDp.textContent = numFmt(wd.Dp, 1, ' °F');
+function setConfigVisible(show) {
+  if (!els.configPanel) return;
+  els.configPanel.classList.toggle('hidden', !show);
+}
 
-  if (data.connected && data.sending) setPill('ok', 'Sending');
-  else if (data.sending) setPill('warn', 'Sending (No ACK)');
-  else setPill('idle', 'Idle');
+function setMapFullscreen(enable) {
+  mapFullscreen = !!enable;
+  document.body.classList.toggle('map-fullscreen', mapFullscreen);
+  if (map) {
+    setTimeout(() => map.invalidateSize(), 100);
+  }
+  if (els.mapFullscreenBtn) {
+    els.mapFullscreenBtn.textContent = mapFullscreen ? 'Exit Fullscreen' : 'Fullscreen Map';
+  }
+}
 
-  const gpsDummyMode = data.gpsDummyMode || 'off';
-  const gpsEnabled = data.nmeaConfig && data.nmeaConfig.enabled;
-  if (!gpsEnabled) setSmallPill(els.gpsPill, 'idle', 'GPS Off');
-  else if (gpsDummyMode && gpsDummyMode !== 'off') setSmallPill(els.gpsPill, 'warn', 'GPS Dummy');
-  else if (data.nmeaConnected) setSmallPill(els.gpsPill, 'ok', 'GPS');
-  else setSmallPill(els.gpsPill, 'err', 'GPS Missing');
-
-  const wxCfg = data.weatherConfig || {};
-  if (!wxCfg.enabled) setSmallPill(els.wxPill, 'idle', 'WX Off');
-  else if (wxCfg.dummyMode && wxCfg.dummyMode !== 'off') setSmallPill(els.wxPill, 'warn', 'WX Dummy');
-  else if (data.weather && data.weather.connected) setSmallPill(els.wxPill, 'ok', 'WX');
-  else setSmallPill(els.wxPill, 'err', 'WX Missing');
+function applyConfig(cfg) {
+  els.localDataUrl.value = cfg.localDataUrl ?? '';
+  els.localFailoverSeconds.value = cfg.localFailoverSeconds ?? 30;
+  els.localRecheckSeconds.value = cfg.localRecheckSeconds ?? 60;
+  els.updateIntervalSeconds.value = cfg.updateIntervalSeconds ?? 5;
+  els.cloudEnabled.value = String(cfg.cloudEnabled ?? true);
+  els.cloudStaleSeconds.value = cfg.cloudStaleSeconds ?? 300;
+  els.cloudUrl.value = cfg.cloudUrl ?? '';
+  els.cloudApiId.value = cfg.cloudApiId ?? '';
+  els.cloudApiKey.value = cfg.cloudApiKey ?? '';
+  els.cloudEcmApiId.value = cfg.cloudEcmApiId ?? '';
+  els.cloudEcmApiKey.value = cfg.cloudEcmApiKey ?? '';
+  els.cloudReferer.value = cfg.cloudReferer ?? '';
+  els.cloudUserAgent.value = cfg.cloudUserAgent ?? '';
+  els.geocodeUrl.value = cfg.geocodeUrl ?? '';
+  els.geocodeApiKey.value = cfg.geocodeApiKey ?? '';
 }
 
 function getFormConfig() {
   return {
-    targetUrl: els.targetUrl.value.trim(),
-    deviceId: els.deviceId.value.trim(),
-    sendIntervalMs: parseInt(els.sendIntervalMs.value || '1000', 10),
-    autoStart: !!els.autoStart.checked,
-    gpsDummyMode: els.gpsDummyMode.value,
-    nmeaProtocol: els.nmeaProtocol.value,
-    nmeaHost: els.nmeaHost.value.trim(),
-    nmeaPort: parseInt(els.nmeaPort.value || '55001', 10),
-    nmeaEnabled: els.nmeaEnabled.value === 'true',
-    weatherEnabled: els.weatherEnabled.value === 'true',
-    weatherPort: els.weatherPort.value,
-    weatherBaud: els.weatherBaud.value,
-    weatherDummyMode: els.weatherDummyMode.value
+    localDataUrl: els.localDataUrl.value.trim(),
+    localFailoverSeconds: Number(els.localFailoverSeconds.value || 30),
+    localRecheckSeconds: Number(els.localRecheckSeconds.value || 60),
+    updateIntervalSeconds: Number(els.updateIntervalSeconds.value || 5),
+    cloudEnabled: els.cloudEnabled.value === 'true',
+    cloudStaleSeconds: Number(els.cloudStaleSeconds.value || 300),
+    cloudUrl: els.cloudUrl.value.trim(),
+    cloudApiId: els.cloudApiId.value.trim(),
+    cloudApiKey: els.cloudApiKey.value.trim(),
+    cloudEcmApiId: els.cloudEcmApiId.value.trim(),
+    cloudEcmApiKey: els.cloudEcmApiKey.value.trim(),
+    cloudReferer: els.cloudReferer.value.trim(),
+    cloudUserAgent: els.cloudUserAgent.value.trim(),
+    geocodeUrl: els.geocodeUrl.value.trim(),
+    geocodeApiKey: els.geocodeApiKey.value.trim()
   };
 }
 
-function applyConfig(cfg) {
-  lastConfig = { ...cfg };
-  els.targetUrl.value = cfg.targetUrl || '';
-  els.deviceId.value = cfg.deviceId || '';
-  els.sendIntervalMs.value = cfg.sendIntervalMs || 1000;
-  els.autoStart.checked = !!cfg.autoStart;
-  els.gpsDummyMode.value = cfg.gpsDummyMode || 'off';
-  els.nmeaProtocol.value = cfg.nmeaProtocol || 'udp';
-  els.nmeaHost.value = cfg.nmeaHost || '';
-  els.nmeaPort.value = cfg.nmeaPort || 55001;
-  els.nmeaEnabled.value = cfg.nmeaEnabled ? 'true' : 'false';
-  els.weatherEnabled.value = cfg.weatherEnabled ? 'true' : 'false';
-  els.weatherPort.value = cfg.weatherPort || '';
-  els.weatherBaud.value = cfg.weatherBaud || '4800';
-  els.weatherDummyMode.value = cfg.weatherDummyMode || 'off';
-  setDirty(false);
+function updateStatus(status) {
+  const data = status.data || null;
+  const age = status.dataAgeSeconds;
+
+  els.source.textContent = status.lastSource || '-';
+  els.updated.textContent = data?.updatedAtUnix ? formatTime(data.updatedAtUnix) : '-';
+  els.age.textContent = typeof age === 'number' ? `${age}s` : '-';
+  els.heading.textContent = data?.headingDeg != null ? `${Math.round(data.headingDeg)}°` : '-';
+  els.speed.textContent = data?.speedMph != null ? `${data.speedMph.toFixed(1)} mph` : '-';
+  els.location.textContent = formatLocation(data);
+  els.coords.textContent = data ? `${data.latitude.toFixed(6)}, ${data.longitude.toFixed(6)}` : '-';
+  els.localStatus.textContent = status.useLocal ? 'Primary (Local)' : 'Fallback (Cloud)';
+  els.lastError.textContent = status.lastError || '-';
+
+  if (data && status.isLive && status.lastSource?.includes('Local')) setPill('ok', 'Receiving');
+  else if (data && status.isLive && status.lastSource?.includes('Cloud')) setPill('warn', 'Fallback');
+  else if (data && !status.isLive) setPill('idle', 'Stale');
+  else setPill('idle', 'No Data');
+
+  updateMap(data);
 }
 
 window.api.getConfig().then(applyConfig);
 
-const dirtyFields = [
-  els.targetUrl,
-  els.deviceId,
-  els.sendIntervalMs,
-  els.autoStart,
-  els.gpsDummyMode,
-  els.nmeaProtocol,
-  els.nmeaHost,
-  els.nmeaPort,
-  els.nmeaEnabled,
-  els.weatherEnabled,
-  els.weatherPort,
-  els.weatherBaud,
-  els.weatherDummyMode
-];
+visibilityButtons = Array.from(document.querySelectorAll('.toggle-visibility'));
+visibilityButtons.forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const targetId = btn.dataset.target;
+    const input = document.getElementById(targetId);
+    if (!input) return;
+    const nextType = input.type === 'password' ? 'text' : 'password';
+    input.type = nextType;
+    btn.textContent = nextType === 'password' ? 'Show' : 'Hide';
+  });
+});
 
-for (const el of dirtyFields) {
-  if (!el) continue;
-  el.addEventListener('change', () => setDirty(true));
-  el.addEventListener('input', () => setDirty(true));
+if (els.followToggle) {
+  els.followToggle.addEventListener('change', () => {
+    followEnabled = els.followToggle.checked;
+    if (followEnabled && lastPosition && map) {
+      map.setView(lastPosition, followZoomValue, { animate: true, duration: 0.6 });
+    }
+  });
+}
+
+if (els.followZoom) {
+  els.followZoom.addEventListener('input', () => {
+    const nextZoom = Number(els.followZoom.value);
+    if (!Number.isFinite(nextZoom) || !map) return;
+    followZoomValue = nextZoom;
+    map.setZoom(nextZoom);
+  });
+}
+
+styleSelect = document.getElementById('styleSelect');
+if (styleSelect) {
+  styleSelect.addEventListener('change', () => {
+    const nextKey = styleSelect.value;
+    if (!map || !baseLayers || !baseLayers[nextKey]) return;
+    if (activeBaseLayer) map.removeLayer(activeBaseLayer);
+    activeBaseLayer = baseLayers[nextKey];
+    activeBaseLayer.addTo(map);
+  });
 }
 
 els.saveBtn.addEventListener('click', async () => {
-  const cfg = getFormConfig();
-  const saved = await window.api.setConfig(cfg);
+  const saved = await window.api.setConfig(getFormConfig());
   applyConfig(saved);
-  setDirty(false);
 });
 
-els.saveBanner.addEventListener('click', async () => {
-  if (!isDirty) return;
-  const cfg = getFormConfig();
-  const saved = await window.api.setConfig(cfg);
-  applyConfig(saved);
-  setDirty(false);
-});
-
-els.startBtn.addEventListener('click', async () => {
-  await window.api.setConfig(getFormConfig());
-  await window.api.startSending();
-});
-
-els.stopBtn.addEventListener('click', async () => {
-  await window.api.stopSending();
+els.mapFullscreenBtn.addEventListener('click', () => {
+  setMapFullscreen(!mapFullscreen);
 });
 
 window.api.onStatus(updateStatus);
+window.api.onToggleConfig(setConfigVisible);
+
+initMap();

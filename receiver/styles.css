@@ -1,0 +1,128 @@
+:root {
+  color-scheme: light;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  background: #f5f6fb;
+  color: #1f2430;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: #f5f6fb;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 28px;
+  background: #101428;
+  color: #fff;
+}
+
+header h1 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.panel {
+  background: #fff;
+  border-radius: 12px;
+  padding: 18px 20px;
+  margin: 18px 24px;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
+}
+
+.panel h2 {
+  margin: 0 0 14px 0;
+  font-size: 18px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px 16px;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  color: #5c6275;
+  gap: 6px;
+}
+
+input {
+  border-radius: 8px;
+  border: 1px solid #d7dce9;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.actions {
+  margin-top: 14px;
+}
+
+button {
+  border: none;
+  border-radius: 8px;
+  padding: 10px 16px;
+  background: #2f6fed;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #245ed1;
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: #5c6275;
+}
+
+.stat strong {
+  font-size: 14px;
+  color: #1f2430;
+}
+
+.payload {
+  background: #0f172a;
+  color: #e2e8f0;
+  padding: 12px;
+  border-radius: 10px;
+  max-height: 240px;
+  overflow: auto;
+  font-size: 12px;
+}
+
+.pill {
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pill.ok {
+  background: #e3f6e9;
+  color: #1b7f3d;
+}
+
+.pill.warn {
+  background: #fff1d9;
+  color: #a56700;
+}
+
+.pill.idle {
+  background: #eceff7;
+  color: #5a6275;
+}
