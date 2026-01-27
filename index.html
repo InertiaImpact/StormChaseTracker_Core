@@ -2,18 +2,20 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: https://tile.openstreetmap.org https://*.basemaps.cartocdn.com https://server.arcgisonline.com https://services.arcgisonline.com; connect-src 'self' http://localhost http://127.0.0.1 http://10.215.100.169 https://www.cradlepointecm.com https://geocode.maps.co;" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: https://tile.openstreetmap.org https://*.basemaps.cartocdn.com https://server.arcgisonline.com https://services.arcgisonline.com; connect-src 'self' http://localhost http://127.0.0.1 http://10.215.100.169 https://www.cradlepointecm.com https://geocode.maps.co https://connect.intellishift.com;" />
   <title>RoadWarrior Map V2</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="../RWmapV2/styles.css" />
+  <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
   <header>
     <div class="title">
       <h1>RoadWarrior Map V2</h1>
-      <p>Local-first GPS with cloud fallback</p>
+      <p>Local-first GPS with NetCloud fallback</p>
     </div>
-    <div id="status-pill" class="pill idle">Idle</div>
+    <div class="status-stack">
+      <div id="status-pill" class="pill idle">Idle</div>
+    </div>
   </header>
 
   <main>
@@ -57,78 +59,170 @@
 
     <section class="panel" id="configPanel">
       <h2>Configuration</h2>
-      <div class="grid">
-        <label>Local Data URL
-          <input id="localDataUrl" type="text" />
-        </label>
-        <label>Local Failover Seconds
-          <input id="localFailoverSeconds" type="number" />
-        </label>
-        <label>Local Recheck Seconds
-          <input id="localRecheckSeconds" type="number" />
-        </label>
-        <label>Update Interval Seconds
-          <input id="updateIntervalSeconds" type="number" />
-        </label>
-        <label>Cloud Enabled
-          <select id="cloudEnabled">
-            <option value="true">Yes</option>
-            <option value="false">No</option>
-          </select>
-        </label>
-        <label>Cloud Stale Seconds
-          <input id="cloudStaleSeconds" type="number" />
-        </label>
-        <label>Cloud URL
-          <input id="cloudUrl" type="text" />
-        </label>
-        <label>Cloud API ID
-          <input id="cloudApiId" type="text" />
-        </label>
-        <label>Cloud API Key
-          <div class="input-with-toggle">
-            <input id="cloudApiKey" type="password" />
-            <button type="button" class="toggle-visibility" data-target="cloudApiKey">Show</button>
+      
+      <!-- ========== DATA SOURCE CONFIG ========== -->
+      <div class="config-section">
+        <h3>Data Source Config</h3>
+        <div class="grid">
+          <label>Edge Data URL
+            <input id="localDataUrl" type="text" />
+          </label>
+          <label>Edge Failover Seconds
+            <input id="localFailoverSeconds" type="number" />
+          </label>
+          <label>Edge Recheck Seconds
+            <input id="localRecheckSeconds" type="number" />
+          </label>
+        </div>
+      </div>
+
+      <!-- ========== INTELLISHIFT CONNECT API CONFIG ========== -->
+      <div class="config-section">
+        <h3>Intellishift ConnectAPI Config</h3>
+        <div class="grid">
+          <label class="toggle-label">Enabled
+            <div class="toggle">
+              <input id="intellishiftEnabled" type="checkbox" />
+              <span class="slider"></span>
+            </div>
+          </label>
+          <label>Base URL
+            <input id="intellishiftBaseUrl" type="text" placeholder="https://connect.intellishift.com" />
+          </label>
+          <label>Auth URL
+            <input id="intellishiftAuthUrl" type="text" placeholder="https://connect.intellishift.com/api/auth/login" />
+          </label>
+          <label>Vehicle
+            <div class="input-with-toggle">
+              <select id="intellishiftVehicleId"></select>
+              <button type="button" id="intellishiftRefreshBtn" class="inline-btn">Refresh</button>
+            </div>
+          </label>
+        </div>
+        <div class="token-row">
+          <div class="token-main">
+            <div id="intellishiftTokenPill" class="pill warn">Token</div>
+            <span id="intellishiftTokenText">Authorization Required</span>
+            <button id="intellishiftAuthorizeBtn" type="button" class="authorize-btn">Authorize</button>
           </div>
-        </label>
-        <label>Cloud ECM API ID
-          <input id="cloudEcmApiId" type="text" />
-        </label>
-        <label>Cloud ECM API Key
-          <div class="input-with-toggle">
-            <input id="cloudEcmApiKey" type="password" />
-            <button type="button" class="toggle-visibility" data-target="cloudEcmApiKey">Show</button>
-          </div>
-        </label>
-        <label>Cloud Referer
-          <input id="cloudReferer" type="text" />
-        </label>
-        <label>Cloud User-Agent
-          <input id="cloudUserAgent" type="text" />
-        </label>
-        <label>Geocode URL
-          <input id="geocodeUrl" type="text" />
-        </label>
-        <label>Geocode API Key
-          <div class="input-with-toggle">
-            <input id="geocodeApiKey" type="password" />
-            <button type="button" class="toggle-visibility" data-target="geocodeApiKey">Show</button>
-          </div>
-        </label>
+          <div id="intellishiftAccountName" class="info-box">Account: -</div>
+        </div>
+      </div>
+
+      <!-- ========== CRADLEPOINT NETCLOUD API CONFIG ========== -->
+      <div class="config-section">
+        <h3>Cradlepoint NetCloud API Config</h3>
+        <div class="grid">
+          <label class="toggle-label">NetCloud Enabled
+            <div class="toggle">
+              <input id="cloudEnabled" type="checkbox" />
+              <span class="slider"></span>
+            </div>
+          </label>
+          <label>NetCloud URL
+            <input id="cloudUrl" type="text" />
+          </label>
+          <label>NetCloud Stale Seconds
+            <input id="cloudStaleSeconds" type="number" />
+          </label>
+          <label>NetCloud API ID
+            <input id="cloudApiId" type="text" />
+          </label>
+          <label>NetCloud API Key
+            <div class="input-with-toggle">
+              <input id="cloudApiKey" type="password" />
+              <button type="button" class="toggle-visibility" data-target="cloudApiKey">Show</button>
+            </div>
+          </label>
+          <label>NetCloud ECM API ID
+            <input id="cloudEcmApiId" type="text" />
+          </label>
+          <label>NetCloud ECM API Key
+            <div class="input-with-toggle">
+              <input id="cloudEcmApiKey" type="password" />
+              <button type="button" class="toggle-visibility" data-target="cloudEcmApiKey">Show</button>
+            </div>
+          </label>
+          <label>NetCloud Referer
+            <input id="cloudReferer" type="text" />
+          </label>
+          <label>NetCloud User-Agent
+            <input id="cloudUserAgent" type="text" />
+          </label>
+        </div>
+      </div>
+
+      <!-- ========== GEOCODE CONFIG ========== -->
+      <div class="config-section">
+        <h3>Geocode Config</h3>
+        <div class="grid">
+          <label>Geocode URL
+            <input id="geocodeUrl" type="text" />
+          </label>
+          <label>Geocode API Key
+            <div class="input-with-toggle">
+              <input id="geocodeApiKey" type="password" />
+              <button type="button" class="toggle-visibility" data-target="geocodeApiKey">Show</button>
+            </div>
+          </label>
+        </div>
+      </div>
+
+      <!-- ========== GENERAL CONFIG ========== -->
+      <div class="config-section">
+        <h3>General Config</h3>
+        <div class="grid">
+          <label>Update Interval Seconds
+            <input id="updateIntervalSeconds" type="number" />
+          </label>
+        </div>
+      </div>
+
+      <!-- ========== TESTING OVERRIDES ========== -->
+      <div class="config-section">
+        <h3>Testing Overrides</h3>
+        <div class="grid">
+          <label>Force Data Source
+            <select id="testingForceSource">
+              <option value="off">Off (Auto)</option>
+              <option value="local">Force Edge</option>
+              <option value="cloud">Force NetCloud</option>
+              <option value="intellishift">Force Intellishift</option>
+              <option value="offline">Force Offline/None</option>
+            </select>
+          </label>
+        </div>
       </div>
       <div class="actions">
         <button id="saveBtn">Save Settings</button>
       </div>
       <div class="status-row">
-        <span>Local Status</span><strong id="localStatus">-</strong>
+        <span>Edge Status</span><strong id="localStatus">-</strong>
       </div>
       <div class="status-row">
         <span>Last Error</span><strong id="lastError">-</strong>
       </div>
+      <div id="saveBanner" class="save-banner hidden">Unsaved changes — click to save</div>
     </section>
   </main>
 
+  <div id="authModal" class="modal">
+    <div class="modal-content">
+      <h3>Authorize Intellishift</h3>
+      <label>Username
+        <input id="authUsername" type="text" autocomplete="username" />
+      </label>
+      <label>Password
+        <input id="authPassword" type="password" autocomplete="current-password" />
+      </label>
+      <div class="modal-actions">
+        <button id="authCancelBtn" type="button" class="secondary">Cancel</button>
+        <button id="authSaveBtn" type="button">Save & Authorize</button>
+      </div>
+    </div>
+  </div>
+
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="../RWmapV2/renderer.js"></script>
+  <script src="./renderer.js"></script>
 </body>
 </html>

@@ -8,23 +8,49 @@ const RECEIVER_CONFIG_FILE = 'rwmapv2-receiver-config.json';
 const SECRETS_FILE = 'secrets.json';
 
 const DEFAULT_CONFIG = {
-  localDataUrl: 'http://localhost/data',
-  localFailoverSeconds: 30,
-  localRecheckSeconds: 60,
   updateIntervalSeconds: 5,
-  cloudStaleSeconds: 300,
   webHost: '0.0.0.0',
   webPort: 8787,
-  cloudEnabled: true,
-  cloudUrl: 'https://www.cradlepointecm.com/api/v2/locations/',
-  cloudApiId: '',
-  cloudApiKey: '',
-  cloudEcmApiId: '',
-  cloudEcmApiKey: '',
-  cloudReferer: '',
-  cloudUserAgent: '',
-  geocodeUrl: 'https://geocode.maps.co/reverse',
-  geocodeApiKey: ''
+
+  // ========== DATA SOURCE CONFIG ==========
+  dataSource: {
+    localDataUrl: 'http://localhost/data',
+    localFailoverSeconds: 30,
+    localRecheckSeconds: 60,
+    intellishift: {
+      enabled: false,
+      baseUrl: 'https://connect.intellishift.com',
+      authUrl: 'https://auth.intellishift.com/oauth/token',
+      username: '',
+      password: '',
+      vehicleId: '',
+      staleSeconds: 300
+    }
+  },
+
+  // ========== CRADLEPOINT NETCLOUD API CONFIG ==========
+  cradlepoint: {
+    cloudEnabled: true,
+    cloudUrl: 'https://www.cradlepointecm.com/api/v2/locations/',
+    cloudStaleSeconds: 300,
+    cloudApiId: '',
+    cloudApiKey: '',
+    cloudEcmApiId: '',
+    cloudEcmApiKey: '',
+    cloudReferer: '',
+    cloudUserAgent: ''
+  },
+
+  // ========== GEOCODE CONFIG ==========
+  geocode: {
+    geocodeUrl: 'https://geocode.maps.co/reverse',
+    geocodeApiKey: ''
+  },
+
+  // ========== TESTING OVERRIDES ==========
+  testing: {
+    forceSource: 'off'
+  }
 };
 
 const DEFAULT_RECEIVER_CONFIG = {
@@ -65,6 +91,13 @@ const receiverState = {
 };
 
 const reverseCache = new Map();
+const intellishiftState = {
+  token: null,
+  tokenExpiresAt: 0,
+  lastError: null,
+  lastAuthAt: null,
+  accountUsername: null
+};
 
 function configPath() {
   return path.join(app.getPath('userData'), CONFIG_FILE);
@@ -78,10 +111,48 @@ function receiverConfigPath() {
   return path.join(app.getPath('userData'), RECEIVER_CONFIG_FILE);
 }
 
+function normalizeLegacyConfig(parsed) {
+  if (!parsed || typeof parsed !== 'object') return parsed;
+  const next = { ...parsed };
+
+  next.dataSource = {
+    ...(parsed.dataSource || {}),
+    localDataUrl: parsed.localDataUrl ?? parsed.dataSource?.localDataUrl,
+    localFailoverSeconds: parsed.localFailoverSeconds ?? parsed.dataSource?.localFailoverSeconds,
+    localRecheckSeconds: parsed.localRecheckSeconds ?? parsed.dataSource?.localRecheckSeconds
+  };
+
+  next.cradlepoint = {
+    ...(parsed.cradlepoint || {}),
+    cloudEnabled: parsed.cradlepoint?.cloudEnabled ?? parsed.cloudEnabled,
+    cloudUrl: parsed.cradlepoint?.cloudUrl ?? parsed.cloudUrl,
+    cloudStaleSeconds: parsed.cradlepoint?.cloudStaleSeconds ?? parsed.cloudStaleSeconds,
+    cloudApiId: parsed.cradlepoint?.cloudApiId ?? parsed.cloudApiId,
+    cloudApiKey: parsed.cradlepoint?.cloudApiKey ?? parsed.cloudApiKey,
+    cloudEcmApiId: parsed.cradlepoint?.cloudEcmApiId ?? parsed.cloudEcmApiId,
+    cloudEcmApiKey: parsed.cradlepoint?.cloudEcmApiKey ?? parsed.cloudEcmApiKey,
+    cloudReferer: parsed.cradlepoint?.cloudReferer ?? parsed.cloudReferer,
+    cloudUserAgent: parsed.cradlepoint?.cloudUserAgent ?? parsed.cloudUserAgent
+  };
+
+  next.geocode = {
+    ...(parsed.geocode || {}),
+    geocodeUrl: parsed.geocodeUrl ?? parsed.geocode?.geocodeUrl,
+    geocodeApiKey: parsed.geocodeApiKey ?? parsed.geocode?.geocodeApiKey
+  };
+
+  next.testing = {
+    ...(parsed.testing || {}),
+    forceSource: parsed.testing?.forceSource ?? parsed.forceSource ?? 'off'
+  };
+
+  return next;
+}
+
 function loadConfig() {
   try {
     const raw = fs.readFileSync(configPath(), 'utf8');
-    const parsed = JSON.parse(raw);
+    const parsed = normalizeLegacyConfig(JSON.parse(raw));
     return { ...DEFAULT_CONFIG, ...loadSecrets(), ...parsed };
   } catch {
     return { ...DEFAULT_CONFIG, ...loadSecrets() };
@@ -130,6 +201,7 @@ function createWindow() {
   mainWindow.once('ready-to-show', () => mainWindow.show());
   mainWindow.webContents.on('did-finish-load', () => {
     mainWindow.webContents.send('toggle-config', showConfig);
+    sendIntellishiftTokenStatus();
   });
   mainWindow.on('close', (e) => {
     if (!app.isQuiting) {
@@ -212,6 +284,184 @@ async function fetchJson(url, options = {}, timeoutMs = 8000) {
   }
 }
 
+function getIntellishiftCfg(currentCfg) {
+  return currentCfg?.dataSource?.intellishift || {};
+}
+
+function isIntellishiftTokenValid() {
+  return !!intellishiftState.token && Date.now() < intellishiftState.tokenExpiresAt;
+}
+
+function setIntellishiftToken(token, expiresInSeconds) {
+  const ttlSeconds = Number.isFinite(expiresInSeconds) && expiresInSeconds > 0 ? expiresInSeconds : 1800;
+  intellishiftState.token = token;
+  intellishiftState.tokenExpiresAt = Date.now() + ttlSeconds * 1000;
+  intellishiftState.lastAuthAt = Date.now();
+  intellishiftState.lastError = null;
+}
+
+function clearIntellishiftToken(errMsg) {
+  intellishiftState.token = null;
+  intellishiftState.tokenExpiresAt = 0;
+  intellishiftState.lastError = errMsg || null;
+  intellishiftState.accountUsername = null;
+}
+
+function sendIntellishiftTokenStatus() {
+  if (!mainWindow || !mainWindow.webContents) return;
+  const valid = isIntellishiftTokenValid();
+  const remainingMs = Math.max(0, intellishiftState.tokenExpiresAt - Date.now());
+  mainWindow.webContents.send('intellishift-token-status', {
+    valid,
+    expiresInSeconds: valid ? Math.floor(remainingMs / 1000) : 0,
+    lastError: intellishiftState.lastError,
+    accountUsername: intellishiftState.accountUsername || null
+  });
+}
+
+async function tryReauthorizeIntellishift(currentCfg) {
+  if (isIntellishiftTokenValid()) return true;
+  const cfg = getIntellishiftCfg(currentCfg);
+  if (!cfg.username || !cfg.password) return false;
+  try {
+    await intellishiftAuthorize(currentCfg, cfg.username, cfg.password);
+    return true;
+  } catch (err) {
+    const msg = err && err.message ? err.message : String(err);
+    intellishiftState.lastError = msg;
+    return false;
+  }
+}
+
+function extractIntellishiftToken(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  return payload.access_token || payload.token || payload.bearerToken || payload.jwt || null;
+}
+
+function extractIntellishiftUsername(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  return payload.username || payload.userName || payload.user || payload.email || null;
+}
+
+async function intellishiftAuthRequest(authUrl, creds) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), 12000);
+  try {
+    const res = await fetch(authUrl, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify({
+        email: creds.username,
+        password: creds.password
+      })
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const text = await res.text();
+    return text ? JSON.parse(text) : null;
+  } finally {
+    clearTimeout(id);
+  }
+}
+
+async function intellishiftAuthorize(currentCfg, username, password) {
+  const cfg = getIntellishiftCfg(currentCfg);
+  const authUrl = cfg.authUrl || '';
+  if (!authUrl) throw new Error('Intellishift authUrl is not configured');
+
+  const creds = {
+    username: username || cfg.username || '',
+    password: password || cfg.password || ''
+  };
+  if (!creds.username || !creds.password) throw new Error('Intellishift username/password missing');
+
+  const payload = await intellishiftAuthRequest(authUrl, creds);
+
+  const token = extractIntellishiftToken(payload);
+  if (!token) throw new Error('Intellishift token not found in response');
+  const expiresIn = payload.expires_in || payload.expiresIn || payload.expires || null;
+  intellishiftState.accountUsername = extractIntellishiftUsername(payload) || creds.username || null;
+  setIntellishiftToken(token, Number(expiresIn));
+  sendIntellishiftTokenStatus();
+  return true;
+}
+
+async function intellishiftFetch(currentCfg, path, options = {}, timeoutMs = 12000) {
+  if (!isIntellishiftTokenValid()) {
+    await intellishiftAuthorize(currentCfg);
+  }
+  if (!isIntellishiftTokenValid()) {
+    throw new Error('Intellishift token invalid');
+  }
+  const cfg = getIntellishiftCfg(currentCfg);
+  const baseUrl = cfg.baseUrl || 'https://connect.intellishift.com';
+  const url = `${baseUrl}${path}`;
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        ...(options.headers || {}),
+        Authorization: `Bearer ${intellishiftState.token}`
+      }
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (res.status === 204) return null;
+    const text = await res.text();
+    return text ? JSON.parse(text) : null;
+  } finally {
+    clearTimeout(id);
+  }
+}
+
+async function fetchIntellishiftVehicles(currentCfg) {
+  const data = await intellishiftFetch(currentCfg, '/api/assets/dictionary');
+  if (!Array.isArray(data)) return [];
+  return data
+    .map((item) => ({ id: item?.id, name: item?.name }))
+    .filter((item) => Number.isFinite(item.id) && item.name);
+}
+
+async function fetchIntellishiftLocation(currentCfg, options = {}) {
+  const cfg = getIntellishiftCfg(currentCfg);
+  if (!cfg.enabled && !options.force) return null;
+  const vehicleId = Number(cfg.vehicleId);
+  if (!Number.isFinite(vehicleId)) return null;
+
+  const data = await intellishiftFetch(currentCfg, '/api/assets/current-locations');
+  if (!Array.isArray(data)) return null;
+  const entry = data.find((item) => Number(item.vehicleId) === vehicleId);
+  if (!entry) return null;
+  if (typeof entry.latitude !== 'number' || typeof entry.longitude !== 'number') return null;
+
+  const updatedAtUnix = entry.lastUpdate ? Date.parse(entry.lastUpdate) / 1000 : null;
+  const payload = {
+    latitude: entry.latitude,
+    longitude: entry.longitude,
+    updatedAtUnix,
+    headingDeg: typeof entry.headingDegrees === 'number' ? entry.headingDegrees : null,
+    speedMph: typeof entry.speed === 'number' ? entry.speed : null,
+    streetName: entry.street ?? null,
+    townName: entry.city ?? null,
+    countyName: entry.state ?? null,
+    source: 'IntellishiftConnectAPI'
+  };
+
+  if (!payload.streetName || !payload.townName || !payload.countyName) {
+    const geo = await reverseGeocode(currentCfg, payload.latitude, payload.longitude);
+    payload.streetName = payload.streetName ?? geo.streetName;
+    payload.townName = payload.townName ?? geo.townName;
+    payload.countyName = payload.countyName ?? geo.countyName;
+  }
+
+  return payload;
+}
+
 function normalizeLocalPayload(payload, lastUpdateUnix) {
   if (!payload || typeof payload !== 'object') return null;
   const latitude = payload.lat ?? payload.latitude;
@@ -231,26 +481,28 @@ function normalizeLocalPayload(payload, lastUpdateUnix) {
     streetName: payload.street_name ?? null,
     townName: payload.town_name ?? null,
     countyName: payload.county_name ?? null,
-    source: 'LocalReceiver'
+    source: 'EdgeReceiver'
   };
 }
 
+// ========== CRADLEPOINT NETCLOUD API CONFIG ==========
 function buildCloudHeaders(currentCfg) {
   return {
-    'X-CP-API-ID': currentCfg.cloudApiId,
-    'X-CP-API-KEY': currentCfg.cloudApiKey,
-    'X-ECM-API-ID': currentCfg.cloudEcmApiId,
-    'X-ECM-API-KEY': currentCfg.cloudEcmApiKey,
-    'Referer': currentCfg.cloudReferer,
-    'User-Agent': currentCfg.cloudUserAgent
+    'X-CP-API-ID': currentCfg.cradlepoint.cloudApiId,
+    'X-CP-API-KEY': currentCfg.cradlepoint.cloudApiKey,
+    'X-ECM-API-ID': currentCfg.cradlepoint.cloudEcmApiId,
+    'X-ECM-API-KEY': currentCfg.cradlepoint.cloudEcmApiKey,
+    'Referer': currentCfg.cradlepoint.cloudReferer,
+    'User-Agent': currentCfg.cradlepoint.cloudUserAgent
   };
 }
 
+// ========== GEOCODE CONFIG ==========
 async function reverseGeocode(currentCfg, latitude, longitude) {
   const cacheKey = `${latitude.toFixed(6)},${longitude.toFixed(6)}`;
   if (reverseCache.has(cacheKey)) return reverseCache.get(cacheKey);
 
-  const url = `${currentCfg.geocodeUrl}?lat=${latitude}&lon=${longitude}&api_key=${encodeURIComponent(currentCfg.geocodeApiKey)}`;
+  const url = `${currentCfg.geocode.geocodeUrl}?lat=${latitude}&lon=${longitude}&api_key=${encodeURIComponent(currentCfg.geocode.geocodeApiKey)}`;
   try {
     const data = await fetchJson(url, {}, 12000);
     const address = data.address || {};
@@ -268,8 +520,9 @@ async function reverseGeocode(currentCfg, latitude, longitude) {
   }
 }
 
+// ========== DATA SOURCE CONFIG ==========
 async function fetchLocalData(currentCfg) {
-  const data = await fetchJson(currentCfg.localDataUrl, {}, 4000);
+  const data = await fetchJson(currentCfg.dataSource.localDataUrl, {}, 4000);
   const payload = normalizeLocalPayload(data.payload, data.last_update_unix);
   if (!payload) return null;
   if (!payload.streetName || !payload.townName || !payload.countyName) {
@@ -282,8 +535,8 @@ async function fetchLocalData(currentCfg) {
 }
 
 async function fetchCloudData(currentCfg) {
-  if (!currentCfg.cloudEnabled) return null;
-  const data = await fetchJson(currentCfg.cloudUrl, {
+  if (!currentCfg.cradlepoint.cloudEnabled) return null;
+  const data = await fetchJson(currentCfg.cradlepoint.cloudUrl, {
     headers: buildCloudHeaders(currentCfg)
   }, 12000);
 
@@ -304,7 +557,7 @@ async function fetchCloudData(currentCfg) {
     streetName: geo.streetName,
     townName: geo.townName,
     countyName: geo.countyName,
-    source: 'CloudAPI'
+    source: 'NetCloud'
   };
 }
 
@@ -485,13 +738,71 @@ async function pollOnce() {
   let localError = null;
   let selectedLive = false;
 
+  if (intellishiftState.token && !isIntellishiftTokenValid()) {
+    clearIntellishiftToken('Intellishift token expired');
+    sendIntellishiftTokenStatus();
+  }
+
+  const forceSource = cfg.testing?.forceSource || 'off';
+  if (forceSource === 'offline') {
+    state.useLocal = false;
+    state.lastError = 'Testing override: Offline/None';
+    state.lastData = null;
+    state.lastSource = 'Forced Offline';
+    state.isLive = false;
+    sendStatus();
+    return;
+  }
+
+  const forcedFetch = async () => {
+    if (forceSource === 'local') return await fetchLocalData(cfg);
+    if (forceSource === 'cloud') return await fetchCloudData(cfg);
+    if (forceSource === 'intellishift') return await fetchIntellishiftLocation(cfg, { force: true });
+    return null;
+  };
+
+  if (forceSource !== 'off') {
+    try {
+      const forcedData = await forcedFetch();
+      if (forcedData) {
+        const staleSeconds = forceSource === 'cloud'
+          ? cfg.cradlepoint.cloudStaleSeconds
+          : forceSource === 'intellishift'
+            ? (cfg.dataSource?.intellishift?.staleSeconds ?? 300)
+            : cfg.dataSource.localFailoverSeconds;
+        const isFresh = isRecent(forcedData, staleSeconds);
+        state.useLocal = forceSource === 'local';
+        state.lastData = forcedData;
+        state.lastSource = `Forced ${forceSource}`;
+        state.isLive = isFresh;
+        sendStatus();
+        return;
+      }
+      state.useLocal = false;
+      state.lastData = null;
+      state.lastSource = `Forced ${forceSource}`;
+      state.isLive = false;
+      state.lastError = `No data from forced source: ${forceSource}`;
+      sendStatus();
+      return;
+    } catch (err) {
+      state.lastError = err && err.message ? err.message : String(err);
+      state.useLocal = false;
+      state.lastData = null;
+      state.lastSource = `Forced ${forceSource}`;
+      state.isLive = false;
+      sendStatus();
+      return;
+    }
+  }
+
   try {
     localData = await fetchLocalData(cfg);
   } catch (err) {
     localError = err && err.message ? err.message : String(err);
   }
 
-  const localIsRecent = localData && isRecent(localData, cfg.localFailoverSeconds);
+  const localIsRecent = localData && isRecent(localData, cfg.dataSource.localFailoverSeconds);
 
   let selected = null;
   let selectedSource = null;
@@ -501,24 +812,24 @@ async function pollOnce() {
     state.lastLocalSeenAt = now;
     state.lastLocalCheckAt = now;
     selected = localData;
-    selectedSource = 'LocalReceiver';
+    selectedSource = 'EdgeReceiver';
     selectedLive = true;
   } else {
     if (state.useLocal) {
-      if (!state.lastLocalSeenAt || now - state.lastLocalSeenAt > cfg.localFailoverSeconds * 1000) {
+      if (!state.lastLocalSeenAt || now - state.lastLocalSeenAt > cfg.dataSource.localFailoverSeconds * 1000) {
         state.useLocal = false;
       }
       state.lastLocalCheckAt = now;
     }
 
     if (!state.useLocal) {
-      if (!state.lastLocalCheckAt || now - state.lastLocalCheckAt >= cfg.localRecheckSeconds * 1000) {
+      if (!state.lastLocalCheckAt || now - state.lastLocalCheckAt >= cfg.dataSource.localRecheckSeconds * 1000) {
         state.lastLocalCheckAt = now;
         if (localIsRecent) {
           state.useLocal = true;
           state.lastLocalSeenAt = now;
           selected = localData;
-          selectedSource = 'LocalReceiver';
+          selectedSource = 'EdgeReceiver';
           selectedLive = true;
         }
       }
@@ -527,13 +838,32 @@ async function pollOnce() {
         try {
           const cloudData = await fetchCloudData(cfg);
           if (cloudData) {
-            const cloudIsRecent = isRecent(cloudData, cfg.cloudStaleSeconds);
+            const cloudIsRecent = isRecent(cloudData, cfg.cradlepoint.cloudStaleSeconds);
             selected = cloudData;
-            selectedSource = cloudIsRecent ? 'CloudAPI' : 'CloudAPI (Stale)';
+            selectedSource = cloudIsRecent ? 'NetCloud' : 'NetCloud (Stale)';
             selectedLive = cloudIsRecent;
           }
         } catch (err) {
           state.lastError = err && err.message ? err.message : String(err);
+        }
+      }
+
+      if (!state.useLocal && !selected) {
+        try {
+          const intellishiftData = await fetchIntellishiftLocation(cfg);
+          if (intellishiftData) {
+            const staleSeconds = cfg.dataSource?.intellishift?.staleSeconds ?? 300;
+            const isFresh = isRecent(intellishiftData, staleSeconds);
+            selected = intellishiftData;
+            selectedSource = isFresh ? 'Intellishift' : 'Intellishift (Stale)';
+            selectedLive = isFresh;
+          }
+        } catch (err) {
+          state.lastError = err && err.message ? err.message : String(err);
+          if (String(err).includes('HTTP 401') || String(err).includes('token')) {
+            clearIntellishiftToken('Intellishift authorization required');
+            sendIntellishiftTokenStatus();
+          }
         }
       }
     }
@@ -541,7 +871,7 @@ async function pollOnce() {
 
   if (!selected && localData) {
     selected = localData;
-    selectedSource = 'LocalReceiver (Stale)';
+    selectedSource = 'EdgeReceiver (Stale)';
     selectedLive = false;
   }
 
@@ -589,6 +919,44 @@ app.whenReady().then(() => {
     saveReceiverConfig(receiverCfg);
     startReceiverServer(receiverCfg);
     return receiverCfg;
+  });
+
+  ipcMain.handle('intellishift-token-status', async () => {
+    await tryReauthorizeIntellishift(cfg);
+    return {
+      valid: isIntellishiftTokenValid(),
+      expiresInSeconds: isIntellishiftTokenValid()
+        ? Math.floor((intellishiftState.tokenExpiresAt - Date.now()) / 1000)
+        : 0,
+      lastError: intellishiftState.lastError,
+      accountUsername: intellishiftState.accountUsername || null
+    };
+  });
+
+  ipcMain.handle('intellishift-auth', async (_e, creds) => {
+    try {
+      await intellishiftAuthorize(cfg, creds?.username, creds?.password);
+      return { ok: true };
+    } catch (err) {
+      const msg = err && err.message ? err.message : String(err);
+      clearIntellishiftToken(msg);
+      sendIntellishiftTokenStatus();
+      return { ok: false, message: msg };
+    }
+  });
+
+  ipcMain.handle('intellishift-vehicles', async () => {
+    try {
+      const vehicles = await fetchIntellishiftVehicles(cfg);
+      return { ok: true, vehicles };
+    } catch (err) {
+      const msg = err && err.message ? err.message : String(err);
+      if (String(err).includes('HTTP 401') || String(err).includes('token')) {
+        clearIntellishiftToken('Intellishift authorization required');
+        sendIntellishiftTokenStatus();
+      }
+      return { ok: false, message: msg, vehicles: [] };
+    }
   });
 
   ipcMain.handle('toggle-fullscreen', (_e, enable) => {

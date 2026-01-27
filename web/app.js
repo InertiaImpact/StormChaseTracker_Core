@@ -13,6 +13,7 @@ const els = {
   styleSelect: document.getElementById('styleSelect')
 };
 
+// ========== MAP CONFIGURATION ==========
 function initMap() {
   map = L.map('map', { zoomControl: false }).setView([42.0277, -91.6408], 12);
   const standard = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -97,6 +98,7 @@ function setPill(status, label) {
   els.statusPill.textContent = label;
 }
 
+// ========== DATA SOURCE CONFIG ==========
 function updateMap(data) {
   if (!data) return;
   const lat = data.latitude;
@@ -123,13 +125,14 @@ function updateMap(data) {
 function updateStatus(status) {
   const data = status.data || null;
 
-  if (data && status.isLive && status.lastSource?.includes('Local')) setPill('ok', 'Live');
-  else if (data && status.isLive && status.lastSource?.includes('Cloud')) setPill('warn', 'Live CloudAPI');
+  if (data && status.isLive && status.lastSource?.includes('Edge')) setPill('ok', 'Live');
+  else if (data && status.isLive && status.lastSource?.includes('NetCloud')) setPill('warn', 'Live NetCloud');
   else setPill('offline', 'Offline');
 
   updateMap(data);
 }
 
+// ========== API POLLING CONFIG ==========
 async function poll() {
   try {
     const res = await fetch('/api/status', { cache: 'no-store' });
@@ -142,6 +145,8 @@ async function poll() {
 }
 
 initMap();
+
+// ========== EVENT LISTENERS CONFIG ==========
 if (els.followToggle) {
   els.followToggle.addEventListener('change', () => {
     followEnabled = els.followToggle.checked;
