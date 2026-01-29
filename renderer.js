@@ -27,6 +27,8 @@ const els = {
   cloudUserAgent: document.getElementById('cloudUserAgent'),
   geocodeUrl: document.getElementById('geocodeUrl'),
   geocodeApiKey: document.getElementById('geocodeApiKey'),
+  xpressionEnabled: document.getElementById('xpressionEnabled'),
+  xpressionOutputPath: document.getElementById('xpressionOutputPath'),
   intellishiftEnabled: document.getElementById('intellishiftEnabled'),
   intellishiftBaseUrl: document.getElementById('intellishiftBaseUrl'),
   intellishiftAuthUrl: document.getElementById('intellishiftAuthUrl'),
@@ -220,6 +222,7 @@ function applyConfig(cfg) {
   const dataSource = cfg.dataSource || {};
   const cradlepoint = cfg.cradlepoint || {};
   const geocode = cfg.geocode || {};
+  const xpression = cfg.xpressionConnector || {};
   const intellishift = dataSource.intellishift || {};
 
   els.localDataUrl.value = dataSource.localDataUrl ?? '';
@@ -241,6 +244,13 @@ function applyConfig(cfg) {
 
   els.geocodeUrl.value = geocode.geocodeUrl ?? '';
   els.geocodeApiKey.value = geocode.geocodeApiKey ?? '';
+
+  if (els.xpressionEnabled) {
+    els.xpressionEnabled.checked = !!(xpression.enabled ?? false);
+  }
+  if (els.xpressionOutputPath) {
+    els.xpressionOutputPath.value = xpression.outputPath ?? '';
+  }
 
   if (els.intellishiftEnabled) {
     els.intellishiftEnabled.checked = !!(intellishift.enabled ?? false);
@@ -292,6 +302,10 @@ function getFormConfig() {
     geocode: {
       geocodeUrl: els.geocodeUrl.value.trim(),
       geocodeApiKey: els.geocodeApiKey.value.trim()
+    },
+    xpressionConnector: {
+      enabled: !!els.xpressionEnabled?.checked,
+      outputPath: els.xpressionOutputPath?.value.trim()
     },
     testing: {
       forceSource: els.testingForceSource?.value || 'off'
@@ -397,11 +411,10 @@ function updateStatus(status) {
   els.location.textContent = formatLocation(data);
   els.coords.textContent = data ? `${data.latitude.toFixed(6)}, ${data.longitude.toFixed(6)}` : '-';
   if (els.mapOverlayLocation) {
-    els.mapOverlayLocation.textContent = `Near ${formatTownState(data)}`;
+    els.mapOverlayLocation.textContent = status.geocodingLocation || '';
   }
   if (els.mapOverlayHeading) {
-    const headingLabel = formatHeadingDirection(data?.headingDeg);
-    els.mapOverlayHeading.textContent = `Heading ${headingLabel}`;
+    els.mapOverlayHeading.textContent = status.geocodingDirection ? `Traveling ${status.geocodingDirection}` : '';
   }
   if (status.useLocal) {
     els.localStatus.textContent = 'Primary (Edge)';
@@ -439,6 +452,12 @@ window.api.getConfig().then((cfg) => {
     if (status?.valid) refreshIntellishiftVehicles();
   });
 });
+
+if (window.api?.onToggleConfig) {
+  window.api.onToggleConfig((show) => setConfigVisible(!!show));
+}
+
+setConfigVisible(true);
 
 visibilityButtons = Array.from(document.querySelectorAll('.toggle-visibility'));
 visibilityButtons.forEach((btn) => {

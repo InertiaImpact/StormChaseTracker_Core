@@ -1,0 +1,55 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: https://tile.openstreetmap.org https://*.basemaps.cartocdn.com https://server.arcgisonline.com https://services.arcgisonline.com; connect-src 'self';" />
+  <title>RoadWarrior Map Keyer</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="/styles.css" />
+  <link rel="stylesheet" href="/keyer.css" />
+</head>
+<body class="keyer-body">
+  <main class="keyer-layout keyer-left" id="keyerLayout">
+    <section class="panel keyer-panel" id="keyerPanel">
+      <div id="map" class="map"></div>
+      <div class="map-overlay" id="mapOverlay">
+        <div id="mapOverlayLocation" class="overlay-line"></div>
+        <div id="mapOverlayHeading" class="overlay-line"></div>
+      </div>
+      <div class="status-overlay">
+        <div id="status-pill" class="pill idle">Offline</div>
+      </div>
+    </section>
+    <section class="keyer-fill" aria-hidden="true"></section>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/app.js"></script>
+  <script>
+    (function () {
+      const layout = document.getElementById('keyerLayout');
+      if (!layout) return;
+
+      const applySide = (side) => {
+        const nextSide = side === 'right' ? 'right' : 'left';
+        layout.classList.remove('keyer-left', 'keyer-right');
+        layout.classList.add(nextSide === 'right' ? 'keyer-right' : 'keyer-left');
+
+        const params = new URLSearchParams(window.location.search);
+        params.set('side', nextSide);
+        const nextUrl = `${window.location.pathname}?${params.toString()}`;
+        window.history.replaceState({}, '', nextUrl);
+      };
+
+      const params = new URLSearchParams(window.location.search);
+      applySide(String(params.get('side') || 'left').toLowerCase());
+
+      window.addEventListener('keydown', (event) => {
+        const key = String(event.key || '').toLowerCase();
+        if (key === 'l') applySide('left');
+        if (key === 'r') applySide('right');
+      });
+    })();
+  </script>
+</body>
+</html>

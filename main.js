@@ -47,6 +47,12 @@ const DEFAULT_CONFIG = {
     geocodeApiKey: ''
   },
 
+  // ========== XPRESSION CONNECTOR ==========
+  xpressionConnector: {
+    enabled: false,
+    outputPath: '\\\\KGAN-XPN-MOSGW\\Local_KGAN_Locator\\'
+  },
+
   // ========== TESTING OVERRIDES ==========
   testing: {
     forceSource: 'off'
@@ -66,7 +72,8 @@ const state = {
   lastData: null,
   lastError: null,
   lastSource: null,
-  isLive: false
+  isLive: false,
+  stoppedSinceUnix: null
 };
 
 let mainWindow = null;
@@ -74,8 +81,12 @@ let receiverWindow = null;
 let tray = null;
 let pollTimer = null;
 let cfg = null;
-let webServer = null;
-let showConfig = false;
+let showConfig = true;
+let xpressionTimer = null;
+let lastXpressionSimple = null;
+let lastXpressionPayload = null;
+let reverseGeocodeLastAt = 0;
+let reverseGeocodeQueue = Promise.resolve();
 
 let receiverCfg = null;
 let receiverServer = null;
@@ -139,6 +150,12 @@ function normalizeLegacyConfig(parsed) {
     ...(parsed.geocode || {}),
     geocodeUrl: parsed.geocodeUrl ?? parsed.geocode?.geocodeUrl,
     geocodeApiKey: parsed.geocodeApiKey ?? parsed.geocode?.geocodeApiKey
+  };
+
+  next.xpressionConnector = {
+    ...(parsed.xpressionConnector || {}),
+    enabled: parsed.xpressionConnector?.enabled ?? parsed.xpressionEnabled ?? false,
+    outputPath: parsed.xpressionConnector?.outputPath ?? parsed.xpressionOutputPath
   };
 
   next.testing = {
@@ -282,6 +299,10 @@ async function fetchJson(url, options = {}, timeoutMs = 8000) {
   } finally {
     clearTimeout(id);
   }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function getIntellishiftCfg(currentCfg) {
@@ -474,6 +495,15 @@ function normalizeLocalPayload(payload, lastUpdateUnix) {
   const headingDeg = payload.heading_deg ?? payload.headingDeg ?? payload.heading ?? null;
   const speedMph = payload.speed_mph ?? payload.speedMph ?? null;
 
+  const weather = payload.weather
+    ?? payload.wx
+    ?? payload.weatherRaw
+    ?? payload.wxRaw
+    ?? payload.weather_data
+    ?? payload.weatherData
+    ?? payload.weatherdata
+    ?? null;
+
   return {
     latitude,
     longitude,
@@ -484,6 +514,7 @@ function normalizeLocalPayload(payload, lastUpdateUnix) {
     townName: payload.town_name ?? null,
     countyName: payload.county_name ?? null,
     stateName: payload.state_name ?? payload.state ?? null,
+    weather,
     source: 'EdgeReceiver'
   };
 }
@@ -505,23 +536,176 @@ async function reverseGeocode(currentCfg, latitude, longitude) {
   const cacheKey = `${latitude.toFixed(6)},${longitude.toFixed(6)}`;
   if (reverseCache.has(cacheKey)) return reverseCache.get(cacheKey);
 
-  const url = `${currentCfg.geocode.geocodeUrl}?lat=${latitude}&lon=${longitude}&api_key=${encodeURIComponent(currentCfg.geocode.geocodeApiKey)}`;
-  try {
-    const data = await fetchJson(url, {}, 12000);
-    const address = data.address || {};
-    const result = {
-      streetName: address.road ?? null,
-      townName: address.town ?? address.city ?? null,
-      countyName: address.county ?? null,
-      stateName: address.state ?? address.state_code ?? null
+  reverseGeocodeQueue = reverseGeocodeQueue.then(async () => {
+    const url = `${currentCfg.geocode.geocodeUrl}?lat=${latitude}&lon=${longitude}&api_key=${encodeURIComponent(currentCfg.geocode.geocodeApiKey)}`;
+    const now = Date.now();
+    const waitMs = Math.max(0, 5000 - (now - reverseGeocodeLastAt));
+    if (waitMs) await sleep(waitMs);
+    reverseGeocodeLastAt = Date.now();
+    try {
+      const data = await fetchJson(url, {}, 12000);
+      const address = data.address || {};
+      const result = {
+        streetName: address.road ?? null,
+        townName: address.town ?? address.city ?? null,
+        countyName: address.county ?? null,
+        stateName: address.state ?? address.state_code ?? null
+      };
+      reverseCache.set(cacheKey, result);
+      return result;
+    } catch {
+      const result = { streetName: 'Unspecified Area', townName: null, countyName: null, stateName: null };
+      reverseCache.set(cacheKey, result);
+      return result;
+    }
+  });
+
+  return reverseGeocodeQueue;
+}
+
+// ========== GEOCODING STRING BUILDER ==========
+function buildGeocodeString(data, dataAgeSeconds, isLive) {
+  if (!data) return { location: '', direction: '' };
+
+  // Extract town and state for location
+  const townName = data.townName || 'Unspecified Area';
+  const stateName = data.stateName || '';
+  const townState = [townName, stateName].filter(Boolean).join(', ');
+
+  // Check if data is stale (consider data older than 60s as stale)
+  const isStale = !isLive || (typeof dataAgeSeconds === 'number' && dataAgeSeconds > 60);
+  
+  // If data is stale, omit direction and just say "near"
+  if (isStale) {
+    return {
+      location: `Near ${townState}`,
+      direction: ''
     };
-    reverseCache.set(cacheKey, result);
-    return result;
-  } catch {
-    const result = { streetName: 'Unspecified Area', townName: null, countyName: null, stateName: null };
-    reverseCache.set(cacheKey, result);
-    return result;
   }
+
+  // Determine if stopped (speed is null, 0, or less than 1 mph)
+  const isStopped = data.speedMph == null || data.speedMph < 1;
+
+  // Check if we've been stopped for at least 15 seconds
+  const now = Date.now() / 1000;
+  let locationPrefix = '';
+
+  if (isStopped) {
+    // If we just stopped, record the time
+    if (!state.stoppedSinceUnix) {
+      state.stoppedSinceUnix = now;
+    }
+    const stoppedDurationSeconds = now - state.stoppedSinceUnix;
+    if (stoppedDurationSeconds >= 15) {
+      locationPrefix = 'Stopped near';
+    } else {
+      // Still moving or just stopped, show as traveling
+      locationPrefix = 'Traveling near';
+    }
+  } else {
+    // Moving
+    state.stoppedSinceUnix = null;
+    locationPrefix = 'Traveling near';
+  }
+
+  // Build direction string (compass direction)
+  const directionDeg = data.headingDeg;
+  let directionStr = '';
+  if (typeof directionDeg === 'number' && !Number.isNaN(directionDeg)) {
+    const directions = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW', 'N'];
+    const idx = Math.round((((directionDeg % 360) + 360) % 360) / 45);
+    directionStr = directions[idx] || '';
+  }
+
+  const isTraveling = locationPrefix.startsWith('Traveling');
+  const travelLine = isTraveling && directionStr
+    ? `Traveling ${directionStr} near ${townState}`
+    : `${locationPrefix} ${townState}`;
+
+  return {
+    location: travelLine,
+    direction: ''
+  };
+}
+
+function formatHeadingDirection(deg) {
+  if (typeof deg !== 'number' || Number.isNaN(deg)) return '';
+  const directions = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW', 'N'];
+  const idx = Math.round((((deg % 360) + 360) % 360) / 45);
+  return directions[idx] || '';
+}
+
+function buildXpressionPayload(data) {
+  if (!data) return null;
+  const fallbackWeather = receiverState?.lastPayload?.weather
+    ?? receiverState?.lastPayload?.wx
+    ?? receiverState?.lastPayload?.weatherRaw
+    ?? receiverState?.lastPayload?.wxRaw
+    ?? null;
+  const headingDirection = formatHeadingDirection(data.headingDeg);
+  return {
+    latitude: data.latitude ?? null,
+    longitude: data.longitude ?? null,
+    headingDeg: data.headingDeg ?? null,
+    headingDir: headingDirection || null,
+    speedMph: data.speedMph ?? null,
+    weather: data.weather ?? data.wx ?? fallbackWeather,
+    road: data.streetName ?? null,
+    nearestCity: data.townName ?? null,
+    state: data.stateName ?? null,
+    updatedAtUnix: data.updatedAtUnix ?? null,
+    source: data.source ?? null
+  };
+}
+
+function getXpressionOutputBase(currentCfg) {
+  const raw = currentCfg?.xpressionConnector?.outputPath || '\\\\KGAN-XPN-MOSGW\\Local_KGAN_Locator\\';
+  const trimmed = raw.replace(/[\\/]+$/, '');
+  return `${trimmed}${path.sep}`;
+}
+
+async function writeXpressionFiles(currentCfg) {
+  if (!currentCfg?.xpressionConnector?.enabled) return;
+  const data = state.lastData;
+  if (!data) return;
+
+  const payload = buildXpressionPayload(data);
+  if (!payload) return;
+
+  const simple = data.townName ?? '';
+  const payloadJson = JSON.stringify(payload, null, 2);
+
+  if (simple === lastXpressionSimple && payloadJson === lastXpressionPayload) return;
+
+  const base = getXpressionOutputBase(currentCfg);
+  const simplePath = path.join(base, 'Payload_Simple.txt');
+  const jsonPath = path.join(base, 'Payload.json');
+
+  try {
+    if (simple !== lastXpressionSimple) {
+      await fs.promises.writeFile(simplePath, simple, 'utf8');
+      lastXpressionSimple = simple;
+    }
+    if (payloadJson !== lastXpressionPayload) {
+      await fs.promises.writeFile(jsonPath, payloadJson, 'utf8');
+      lastXpressionPayload = payloadJson;
+    }
+  } catch (err) {
+    state.lastError = err && err.message ? err.message : String(err);
+  }
+}
+
+function startXpressionWriter(currentCfg) {
+  if (xpressionTimer) clearInterval(xpressionTimer);
+  xpressionTimer = null;
+  lastXpressionSimple = null;
+  lastXpressionPayload = null;
+
+  if (!currentCfg?.xpressionConnector?.enabled) return;
+  writeXpressionFiles(currentCfg);
+  xpressionTimer = setInterval(() => {
+    writeXpressionFiles(currentCfg);
+  }, 2000);
 }
 
 // ========== DATA SOURCE CONFIG ==========
@@ -575,6 +759,7 @@ function buildStatusPayload() {
   const now = Date.now();
   const data = state.lastData;
   const dataAgeSeconds = data?.updatedAtUnix ? Math.max(0, Math.floor((now - data.updatedAtUnix * 1000) / 1000)) : null;
+  const geocoding = buildGeocodeString(data, dataAgeSeconds, state.isLive);
 
   return {
     useLocal: state.useLocal,
@@ -584,7 +769,9 @@ function buildStatusPayload() {
     lastLocalSeenAt: state.lastLocalSeenAt,
     lastLocalCheckAt: state.lastLocalCheckAt,
     dataAgeSeconds,
-    data
+    data,
+    geocodingLocation: geocoding.location,
+    geocodingDirection: geocoding.direction
   };
 }
 
@@ -592,58 +779,6 @@ function sendStatus() {
   if (mainWindow && mainWindow.webContents) {
     mainWindow.webContents.send('status', buildStatusPayload());
   }
-}
-
-function startWebServer() {
-  if (webServer) {
-    try { webServer.close(); } catch { /* ignore */ }
-    webServer = null;
-  }
-
-  const webRoot = path.join(__dirname, 'web');
-  const readStatic = (fileName, res, contentType) => {
-    const filePath = path.join(webRoot, fileName);
-    try {
-      const data = fs.readFileSync(filePath);
-      res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'no-store' });
-      res.end(data);
-    } catch {
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      res.end('Not found');
-    }
-  };
-
-  webServer = http.createServer((req, res) => {
-    const base = `http://${req.headers.host || 'localhost'}`;
-    const url = new URL(req.url || '/', base);
-
-    if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
-      readStatic('index.html', res, 'text/html; charset=utf-8');
-      return;
-    }
-
-    if (req.method === 'GET' && url.pathname === '/app.js') {
-      readStatic('app.js', res, 'application/javascript; charset=utf-8');
-      return;
-    }
-
-    if (req.method === 'GET' && url.pathname === '/styles.css') {
-      readStatic('styles.css', res, 'text/css; charset=utf-8');
-      return;
-    }
-
-    if (req.method === 'GET' && url.pathname === '/api/status') {
-      const payload = buildStatusPayload();
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-      res.end(JSON.stringify(payload));
-      return;
-    }
-
-    res.writeHead(404, { 'Content-Type': 'text/plain' });
-    res.end('Not found');
-  });
-
-  webServer.listen(cfg.webPort, cfg.webHost);
 }
 
 function formatReceiverStatus(currentCfg) {
@@ -683,12 +818,84 @@ function startReceiverServer(currentCfg) {
   stopReceiverServer();
   receiverState.serverError = null;
 
+  const webRoot = path.join(__dirname, 'web');
+  const readWebStatic = (fileName, res, contentType) => {
+    const filePath = path.join(webRoot, fileName);
+    try {
+      const data = fs.readFileSync(filePath);
+      res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'no-store' });
+      res.end(data);
+    } catch {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Not found');
+    }
+  };
+
   receiverServer = http.createServer((req, res) => {
     const base = `http://${req.headers.host || 'localhost'}`;
     const url = new URL(req.url || '/', base);
     const reqPath = url.pathname;
     const ingestPath = currentCfg.ingestPath.startsWith('/') ? currentCfg.ingestPath : `/${currentCfg.ingestPath}`;
     const ingestAlt = ingestPath.endsWith('/') ? ingestPath.slice(0, -1) : `${ingestPath}/`;
+
+    if (req.method === 'GET' && (reqPath === '/' || reqPath === '/index.html')) {
+      readWebStatic('index.html', res, 'text/html; charset=utf-8');
+      return;
+    }
+
+    if (req.method === 'GET' && (reqPath === '/key' || reqPath === '/keyer.html' || reqPath === '/key.html')) {
+      readWebStatic('keyer.html', res, 'text/html; charset=utf-8');
+      return;
+    }
+
+    if (req.method === 'GET' && reqPath === '/app.js') {
+      readWebStatic('app.js', res, 'application/javascript; charset=utf-8');
+      return;
+    }
+
+    if (req.method === 'GET' && reqPath === '/styles.css') {
+      readWebStatic('styles.css', res, 'text/css; charset=utf-8');
+      return;
+    }
+
+    if (req.method === 'GET' && reqPath === '/keyer.css') {
+      readWebStatic('keyer.css', res, 'text/css; charset=utf-8');
+      return;
+    }
+
+    if (req.method === 'GET' && reqPath === '/app-styles.css') {
+      const appStylesPath = path.join(__dirname, 'styles.css');
+      try {
+        const data = fs.readFileSync(appStylesPath);
+        res.writeHead(200, { 'Content-Type': 'text/css; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(data);
+      } catch {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('Not found');
+      }
+      return;
+    }
+
+    if (req.method === 'GET' && reqPath === '/api/status') {
+      const payload = buildStatusPayload();
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(payload));
+      return;
+    }
+
+    if (req.method === 'GET' && reqPath === '/api/xpression') {
+      const payload = buildXpressionPayload(state.lastData);
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(payload));
+      return;
+    }
+
+    if (req.method === 'GET' && reqPath === '/api/xpression/simple') {
+      const simple = state.lastData?.townName ?? '';
+      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(simple);
+      return;
+    }
 
     if (req.method === 'POST' && (reqPath === ingestPath || reqPath === ingestAlt)) {
       let body = '';
@@ -904,8 +1111,8 @@ app.whenReady().then(() => {
   setupTray();
   setupMenu();
   startPolling();
-  startWebServer();
   startReceiverServer(receiverCfg);
+  startXpressionWriter(cfg);
   receiverStatusTimer = setInterval(sendReceiverStatus, 500);
 
   ipcMain.handle('get-config', () => cfg);
@@ -913,7 +1120,7 @@ app.whenReady().then(() => {
     cfg = { ...cfg, ...newCfg };
     saveConfig(cfg);
     startPolling();
-    startWebServer();
+    startXpressionWriter(cfg);
     return cfg;
   });
 
@@ -975,8 +1182,6 @@ app.on('before-quit', () => {
   app.isQuiting = true;
   if (pollTimer) clearInterval(pollTimer);
   if (receiverStatusTimer) clearInterval(receiverStatusTimer);
-  if (webServer) {
-    try { webServer.close(); } catch { /* ignore */ }
-  }
+  if (xpressionTimer) clearInterval(xpressionTimer);
   stopReceiverServer();
 });

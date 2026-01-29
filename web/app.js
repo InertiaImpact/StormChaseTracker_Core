@@ -148,11 +148,10 @@ function updateStatus(status) {
   else setPill('offline', 'Offline');
 
   if (els.mapOverlayLocation) {
-    els.mapOverlayLocation.textContent = `Near ${formatTownState(data)}`;
+    els.mapOverlayLocation.textContent = status.geocodingLocation || '';
   }
   if (els.mapOverlayHeading) {
-    const headingLabel = formatHeadingDirection(data?.headingDeg);
-    els.mapOverlayHeading.textContent = `Heading ${headingLabel}`;
+    els.mapOverlayHeading.textContent = status.geocodingDirection ? `Traveling ${status.geocodingDirection}` : '';
   }
 
   updateMap(data);
