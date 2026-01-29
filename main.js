@@ -87,6 +87,7 @@ let lastXpressionSimple = null;
 let lastXpressionPayload = null;
 let reverseGeocodeLastAt = 0;
 let reverseGeocodeQueue = Promise.resolve();
+const countyBounds = new Map();
 
 let receiverCfg = null;
 let receiverServer = null;
@@ -643,6 +644,7 @@ function buildXpressionPayload(data) {
     ?? receiverState?.lastPayload?.wxRaw
     ?? null;
   const headingDirection = formatHeadingDirection(data.headingDeg);
+  const nearestCity = data.townName || formatXpressionSimple(data);
   return {
     latitude: data.latitude ?? null,
     longitude: data.longitude ?? null,
@@ -651,11 +653,76 @@ function buildXpressionPayload(data) {
     speedMph: data.speedMph ?? null,
     weather: data.weather ?? data.wx ?? fallbackWeather,
     road: data.streetName ?? null,
-    nearestCity: data.townName ?? null,
+    nearestCity: nearestCity || null,
     state: data.stateName ?? null,
     updatedAtUnix: data.updatedAtUnix ?? null,
     source: data.source ?? null
   };
+}
+
+function getCountyKey(data) {
+  if (!data?.countyName) return null;
+  const state = data.stateName || '';
+  return `${data.countyName}|${state}`;
+}
+
+function updateCountyBounds(data) {
+  const key = getCountyKey(data);
+  const lat = data?.latitude;
+  const lon = data?.longitude;
+  if (!key || typeof lat !== 'number' || typeof lon !== 'number') return;
+  const existing = countyBounds.get(key);
+  if (!existing) {
+    countyBounds.set(key, { minLat: lat, maxLat: lat, minLon: lon, maxLon: lon });
+    return;
+  }
+  existing.minLat = Math.min(existing.minLat, lat);
+  existing.maxLat = Math.max(existing.maxLat, lat);
+  existing.minLon = Math.min(existing.minLon, lon);
+  existing.maxLon = Math.max(existing.maxLon, lon);
+}
+
+function formatCountyLabel(countyName) {
+  if (!countyName) return '';
+  return /county/i.test(countyName) ? countyName : `${countyName} County`;
+}
+
+function getCountyQualifier(bounds, lat, lon) {
+  if (!bounds) return '';
+  const latRange = bounds.maxLat - bounds.minLat;
+  const lonRange = bounds.maxLon - bounds.minLon;
+  if (!Number.isFinite(latRange) || !Number.isFinite(lonRange)) return '';
+  if (latRange < 0.01 && lonRange < 0.01) return '';
+  const midLat = (bounds.minLat + bounds.maxLat) / 2;
+  const midLon = (bounds.minLon + bounds.maxLon) / 2;
+  const latDelta = Math.abs(lat - midLat);
+  const lonDelta = Math.abs(lon - midLon);
+  const latCentral = latDelta <= latRange * 0.2;
+  const lonCentral = lonDelta <= lonRange * 0.2;
+  if (latCentral && lonCentral) return '';
+  const latSide = lat >= midLat ? 'North' : 'South';
+  const lonSide = lon >= midLon ? 'East' : 'West';
+  if (latRange >= 0.01 && lonRange >= 0.01) {
+    if (latSide === 'North' && lonSide === 'East') return 'Northeast';
+    if (latSide === 'North' && lonSide === 'West') return 'Northwest';
+    if (latSide === 'South' && lonSide === 'East') return 'Southeast';
+    return 'Southwest';
+  }
+  if (latRange >= 0.01) return latSide;
+  if (lonRange >= 0.01) return lonSide;
+  return '';
+}
+
+function formatXpressionSimple(data) {
+  if (!data) return '';
+  if (data.townName) return data.townName;
+  updateCountyBounds(data);
+  const key = getCountyKey(data);
+  const bounds = key ? countyBounds.get(key) : null;
+  const qualifier = getCountyQualifier(bounds, data.latitude, data.longitude);
+  const countyLabel = formatCountyLabel(data.countyName);
+  if (!countyLabel) return '';
+  return qualifier ? `${qualifier} ${countyLabel}` : countyLabel;
 }
 
 function getXpressionOutputBase(currentCfg) {
@@ -672,7 +739,7 @@ async function writeXpressionFiles(currentCfg) {
   const payload = buildXpressionPayload(data);
   if (!payload) return;
 
-  const simple = data.townName ?? '';
+  const simple = formatXpressionSimple(data);
   const payloadJson = JSON.stringify(payload, null, 2);
 
   if (simple === lastXpressionSimple && payloadJson === lastXpressionPayload) return;
@@ -891,7 +958,7 @@ function startReceiverServer(currentCfg) {
     }
 
     if (req.method === 'GET' && reqPath === '/api/xpression/simple') {
-      const simple = state.lastData?.townName ?? '';
+      const simple = formatXpressionSimple(state.lastData);
       res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(simple);
       return;
