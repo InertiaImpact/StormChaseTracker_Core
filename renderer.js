@@ -16,6 +16,7 @@ const els = {
   localFailoverSeconds: document.getElementById('localFailoverSeconds'),
   localRecheckSeconds: document.getElementById('localRecheckSeconds'),
   updateIntervalSeconds: document.getElementById('updateIntervalSeconds'),
+  webPollIntervalSeconds: document.getElementById('webPollIntervalSeconds'),
   cloudEnabled: document.getElementById('cloudEnabled'),
   cloudStaleSeconds: document.getElementById('cloudStaleSeconds'),
   cloudUrl: document.getElementById('cloudUrl'),
@@ -143,7 +144,9 @@ function createHeadingIcon(deg) {
   const rotation = typeof deg === 'number' ? deg : 0;
   return L.divIcon({
     className: 'heading-icon',
-    html: `<div class="arrow" style="transform: rotate(${rotation}deg)"></div>`
+    html: `<div class="arrow" style="transform: rotate(${rotation}deg)"></div>`,
+    iconSize: [20, 22],
+    iconAnchor: [10, 11]
   });
 }
 
@@ -229,6 +232,9 @@ function applyConfig(cfg) {
   els.localFailoverSeconds.value = dataSource.localFailoverSeconds ?? 30;
   els.localRecheckSeconds.value = dataSource.localRecheckSeconds ?? 60;
   els.updateIntervalSeconds.value = cfg.updateIntervalSeconds ?? 5;
+  if (els.webPollIntervalSeconds) {
+    els.webPollIntervalSeconds.value = cfg.webPollIntervalSeconds ?? 5;
+  }
 
   if (els.cloudEnabled) {
     els.cloudEnabled.checked = !!(cradlepoint.cloudEnabled ?? true);
@@ -274,6 +280,7 @@ function applyConfig(cfg) {
 function getFormConfig() {
   return {
     updateIntervalSeconds: Number(els.updateIntervalSeconds.value || 5),
+    webPollIntervalSeconds: Number(els.webPollIntervalSeconds?.value || 5),
     dataSource: {
       localDataUrl: els.localDataUrl.value.trim(),
       localFailoverSeconds: Number(els.localFailoverSeconds.value || 30),
@@ -569,6 +576,10 @@ if (els.cloudEnabled) {
 
 if (els.intellishiftEnabled) {
   els.intellishiftEnabled.addEventListener('change', saveConfigFromForm);
+}
+
+if (els.testingForceSource) {
+  els.testingForceSource.addEventListener('change', saveConfigFromForm);
 }
 
 els.mapFullscreenBtn.addEventListener('click', () => {

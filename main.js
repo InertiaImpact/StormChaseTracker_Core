@@ -9,6 +9,7 @@ const SECRETS_FILE = 'secrets.json';
 
 const DEFAULT_CONFIG = {
   updateIntervalSeconds: 5,
+  webPollIntervalSeconds: 5,
   webHost: '0.0.0.0',
   webPort: 8787,
 
@@ -92,12 +93,16 @@ const countyBounds = new Map();
 let receiverCfg = null;
 let receiverServer = null;
 let receiverStatusTimer = null;
+let pollSeq = 0;
+let currentPollId = null;
+let pollRunning = false;
 
 const receiverState = {
   listening: false,
   lastUpdateAt: null,
   firstUpdateAt: null,
   lastPayload: null,
+  lastPayloadTsUnix: null,
   lastSenderIp: null,
   serverError: null
 };
@@ -206,10 +211,12 @@ function saveReceiverConfig(newCfg) {
 }
 
 function createWindow() {
+  const iconPath = path.join(__dirname, 'assets', 'RoadWarrior.png');
   mainWindow = new BrowserWindow({
     width: 1100,
     height: 760,
     show: false,
+    icon: iconPath,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true
@@ -230,10 +237,12 @@ function createWindow() {
 }
 
 function createReceiverWindow() {
+  const iconPath = path.join(__dirname, 'assets', 'RoadWarrior.png');
   receiverWindow = new BrowserWindow({
     width: 700,
     height: 640,
     show: false,
+    icon: iconPath,
     webPreferences: {
       preload: path.join(__dirname, 'receiver', 'preload.js'),
       contextIsolation: true
@@ -278,8 +287,8 @@ function setupMenu() {
 }
 
 function setupTray() {
-  const dataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAQAAAC1+jfqAAAAI0lEQVQoz2NgwAb+///f+P///4YGBgYGBgYGABoMA3S5myDRAAAAAElFTkSuQmCC';
-  const icon = nativeImage.createFromDataURL(dataUrl);
+  const iconPath = path.join(__dirname, 'assets', 'RoadWarrior.png');
+  const icon = nativeImage.createFromPath(iconPath);
   tray = new Tray(icon);
   const contextMenu = Menu.buildFromTemplate([
     { label: 'Show', click: () => mainWindow.show() },
@@ -492,7 +501,13 @@ function normalizeLocalPayload(payload, lastUpdateUnix) {
   const longitude = payload.lon ?? payload.longitude;
   if (typeof latitude !== 'number' || typeof longitude !== 'number') return null;
 
-  const updatedUnix = payload.ts_unix ?? lastUpdateUnix ?? null;
+  const payloadTs = payload.ts_unix ?? payload.tsUnix ?? null;
+  const hasLastUpdate = Number.isFinite(lastUpdateUnix);
+  const hasPayloadTs = Number.isFinite(payloadTs);
+  const updatedUnix = hasLastUpdate
+    ? lastUpdateUnix
+    : (hasPayloadTs ? payloadTs : null);
+  const updatedAtSource = hasLastUpdate ? 'last_update_unix' : (hasPayloadTs ? 'payload_ts' : 'missing');
   const headingDeg = payload.heading_deg ?? payload.headingDeg ?? payload.heading ?? null;
   const speedMph = payload.speed_mph ?? payload.speedMph ?? null;
 
@@ -509,6 +524,7 @@ function normalizeLocalPayload(payload, lastUpdateUnix) {
     latitude,
     longitude,
     updatedAtUnix: updatedUnix,
+    updatedAtSource,
     headingDeg,
     speedMph,
     streetName: payload.street_name ?? null,
@@ -562,6 +578,21 @@ async function reverseGeocode(currentCfg, latitude, longitude) {
   });
 
   return reverseGeocodeQueue;
+}
+
+function enqueueReverseGeocode(currentCfg, payload) {
+  if (!payload || typeof payload.latitude !== 'number' || typeof payload.longitude !== 'number') return;
+  reverseGeocode(currentCfg, payload.latitude, payload.longitude)
+    .then((geo) => {
+      if (!geo) return;
+      if (state.lastData !== payload) return;
+      payload.streetName = payload.streetName ?? geo.streetName;
+      payload.townName = payload.townName ?? geo.townName;
+      payload.countyName = payload.countyName ?? geo.countyName;
+      payload.stateName = payload.stateName ?? geo.stateName;
+      sendStatus();
+    })
+    .catch(() => { /* ignore */ });
 }
 
 // ========== GEOCODING STRING BUILDER ==========
@@ -779,6 +810,18 @@ function startXpressionWriter(currentCfg) {
 async function fetchLocalData(currentCfg) {
   const data = await fetchJson(currentCfg.dataSource.localDataUrl, {}, 4000);
   const payload = normalizeLocalPayload(data.payload, data.last_update_unix);
+  try {
+    const tsUnix = payload?.updatedAtUnix ?? null;
+    const ageSeconds = typeof tsUnix === 'number'
+      ? Math.floor(Date.now() / 1000 - tsUnix)
+      : null;
+    const payloadTs = data?.payload?.ts_unix ?? data?.payload?.tsUnix ?? null;
+    const lastUpdate = data?.last_update_unix ?? null;
+    const payloadOlder = Number.isFinite(payloadTs) && Number.isFinite(lastUpdate) && payloadTs < lastUpdate;
+    console.log(`[local#${currentPollId ?? '-'}] url=${currentCfg.dataSource.localDataUrl} last_update_unix=${lastUpdate ?? 'missing'} payload_ts=${payloadTs ?? 'missing'} updatedAtUnix=${tsUnix ?? 'missing'} source=${payload?.updatedAtSource ?? 'unknown'} age=${ageSeconds ?? 'n/a'}s${payloadOlder ? ' payload_ts<last_update_unix' : ''}`);
+  } catch {
+    console.log(`[local#${currentPollId ?? '-'}] fetched data (unable to summarize).`);
+  }
   if (!payload) return null;
   if (!payload.streetName || !payload.townName || !payload.countyName) {
     const geo = await reverseGeocode(currentCfg, payload.latitude, payload.longitude);
@@ -837,6 +880,7 @@ function buildStatusPayload() {
     lastLocalCheckAt: state.lastLocalCheckAt,
     dataAgeSeconds,
     data,
+    webPollIntervalSeconds: cfg?.webPollIntervalSeconds ?? 5,
     geocodingLocation: geocoding.location,
     geocodingDirection: geocoding.direction
   };
@@ -951,16 +995,9 @@ function startReceiverServer(currentCfg) {
     }
 
     if (req.method === 'GET' && reqPath === '/api/xpression') {
-      const payload = buildXpressionPayload(state.lastData);
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-      res.end(JSON.stringify(payload));
-      return;
-    }
-
-    if (req.method === 'GET' && reqPath === '/api/xpression/simple') {
       const simple = formatXpressionSimple(state.lastData);
-      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
-      res.end(simple);
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ data: [{ simpleText: simple }] }));
       return;
     }
 
@@ -970,10 +1007,29 @@ function startReceiverServer(currentCfg) {
       req.on('end', () => {
         let payload = null;
         try { payload = JSON.parse(body); } catch { payload = { raw: body }; }
+        const tsUnix = payload?.ts_unix ?? payload?.tsUnix ?? payload?.timestamp ?? null;
+        const tsUnixNumber = Number.isFinite(tsUnix) ? tsUnix : null;
+        const lastTs = receiverState.lastPayloadTsUnix;
+        const isOutOfOrder = tsUnixNumber != null && Number.isFinite(lastTs) && tsUnixNumber < lastTs;
+
         receiverState.lastUpdateAt = Date.now();
         if (!receiverState.firstUpdateAt) receiverState.firstUpdateAt = receiverState.lastUpdateAt;
-        receiverState.lastPayload = payload;
+        if (isOutOfOrder) {
+          console.log(`[ingest] ignoring out-of-order payload ts_unix=${tsUnixNumber} < last=${lastTs}`);
+        } else {
+          receiverState.lastPayload = payload;
+          receiverState.lastPayloadTsUnix = tsUnixNumber ?? lastTs ?? null;
+        }
         receiverState.lastSenderIp = req.socket.remoteAddress;
+
+        try {
+          const ageSeconds = typeof tsUnix === 'number'
+            ? Math.floor(Date.now() / 1000 - tsUnix)
+            : null;
+          console.log(`[ingest] from ${receiverState.lastSenderIp || 'unknown'} ts_unix=${tsUnix ?? 'missing'} age=${ageSeconds ?? 'n/a'}s payload_keys=${payload && typeof payload === 'object' ? Object.keys(payload).join(',') : 'n/a'}`);
+        } catch {
+          console.log('[ingest] received payload (unable to summarize).');
+        }
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ status: 'ok' }));
@@ -1011,17 +1067,25 @@ function startReceiverServer(currentCfg) {
 }
 
 async function pollOnce() {
-  const now = Date.now();
-  let localData = null;
-  let localError = null;
-  let selectedLive = false;
+  if (pollRunning) {
+    console.log('[poll] skipped (previous poll still running).');
+    return;
+  }
+  pollRunning = true;
+  try {
+    const pollId = ++pollSeq;
+    currentPollId = pollId;
+    const now = Date.now();
+    let localData = null;
+    let localError = null;
+    let selectedLive = false;
 
   if (intellishiftState.token && !isIntellishiftTokenValid()) {
     clearIntellishiftToken('Intellishift token expired');
     sendIntellishiftTokenStatus();
   }
 
-  const forceSource = cfg.testing?.forceSource || 'off';
+  const forceSource = String(cfg.testing?.forceSource || 'off').toLowerCase();
   if (forceSource === 'offline') {
     state.useLocal = false;
     state.lastError = 'Testing override: Offline/None';
@@ -1043,16 +1107,15 @@ async function pollOnce() {
     try {
       const forcedData = await forcedFetch();
       if (forcedData) {
-        const staleSeconds = forceSource === 'cloud'
-          ? cfg.cradlepoint.cloudStaleSeconds
-          : forceSource === 'intellishift'
-            ? (cfg.dataSource?.intellishift?.staleSeconds ?? 300)
-            : cfg.dataSource.localFailoverSeconds;
-        const isFresh = isRecent(forcedData, staleSeconds);
+        if (!forcedData.updatedAtUnix) {
+          forcedData.updatedAtUnix = Date.now() / 1000;
+        }
+        const isFresh = true;
         state.useLocal = forceSource === 'local';
         state.lastData = forcedData;
         state.lastSource = `Forced ${forceSource}`;
         state.isLive = isFresh;
+        state.lastError = null;
         sendStatus();
         return;
       }
@@ -1080,7 +1143,16 @@ async function pollOnce() {
     localError = err && err.message ? err.message : String(err);
   }
 
+  const localUpdatedAt = localData?.updatedAtUnix ?? null;
+  const localAgeSeconds = localUpdatedAt ? Math.floor(Date.now() / 1000 - localUpdatedAt) : null;
   const localIsRecent = localData && isRecent(localData, cfg.dataSource.localFailoverSeconds);
+  if (localData && !localUpdatedAt) {
+    console.log(`[stale#${pollId}] Local data missing updatedAtUnix (ts_unix/last_update_unix).`);
+  }
+  if (localData && localUpdatedAt && !localIsRecent) {
+    console.log(`[stale#${pollId}] Local data age ${localAgeSeconds}s > ${cfg.dataSource.localFailoverSeconds}s (now=${Math.floor(now / 1000)} updatedAtUnix=${localUpdatedAt}).`);
+  }
+  console.log(`[poll#${pollId}] localIsRecent=${!!localIsRecent} localAge=${localAgeSeconds ?? 'n/a'}s failover=${cfg.dataSource.localFailoverSeconds}s`);
 
   let selected = null;
   let selectedSource = null;
@@ -1120,6 +1192,12 @@ async function pollOnce() {
             selected = cloudData;
             selectedSource = cloudIsRecent ? 'NetCloud' : 'NetCloud (Stale)';
             selectedLive = cloudIsRecent;
+              if (!cloudIsRecent) {
+                const cloudAgeSeconds = cloudData?.updatedAtUnix
+                  ? Math.floor(Date.now() / 1000 - cloudData.updatedAtUnix)
+                  : null;
+                console.log(`[stale#${pollId}] NetCloud data age ${cloudAgeSeconds ?? 'unknown'}s > ${cfg.cradlepoint.cloudStaleSeconds}s.`);
+              }
           }
         } catch (err) {
           state.lastError = err && err.message ? err.message : String(err);
@@ -1135,6 +1213,12 @@ async function pollOnce() {
             selected = intellishiftData;
             selectedSource = isFresh ? 'Intellishift' : 'Intellishift (Stale)';
             selectedLive = isFresh;
+              if (!isFresh) {
+                const intelliAgeSeconds = intellishiftData?.updatedAtUnix
+                  ? Math.floor(Date.now() / 1000 - intellishiftData.updatedAtUnix)
+                  : null;
+                console.log(`[stale#${pollId}] Intellishift data age ${intelliAgeSeconds ?? 'unknown'}s > ${staleSeconds}s.`);
+              }
           }
         } catch (err) {
           state.lastError = err && err.message ? err.message : String(err);
@@ -1151,6 +1235,7 @@ async function pollOnce() {
     selected = localData;
     selectedSource = 'EdgeReceiver (Stale)';
     selectedLive = false;
+    console.log(`[stale#${pollId}] Falling back to local stale data.`);
   }
 
   state.lastError = localError || state.lastError;
@@ -1158,11 +1243,17 @@ async function pollOnce() {
     state.lastData = selected;
     state.lastSource = selectedSource;
     state.isLive = selectedLive;
+    console.log(`[poll#${pollId}] selected=${selectedSource} live=${selectedLive}`);
   } else {
     state.isLive = false;
+    console.log(`[poll#${pollId}] selected=none live=false`);
   }
 
-  sendStatus();
+    sendStatus();
+    return;
+  } finally {
+    pollRunning = false;
+  }
 }
 
 function startPolling() {

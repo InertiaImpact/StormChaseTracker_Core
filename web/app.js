@@ -5,6 +5,8 @@ let activeBaseLayer = null;
 let followEnabled = true;
 let followZoomValue = 13;
 let lastPosition = null;
+let pollTimer = null;
+let pollIntervalSeconds = 5;
 
 const els = {
   statusPill: document.getElementById('status-pill'),
@@ -86,7 +88,9 @@ function createHeadingIcon(deg) {
   const rotation = typeof deg === 'number' ? deg : 0;
   return L.divIcon({
     className: 'heading-icon',
-    html: `<div class="arrow" style="transform: rotate(${rotation}deg)"></div>`
+    html: `<div class="arrow" style="transform: rotate(${rotation}deg)"></div>`,
+    iconSize: [20, 22],
+    iconAnchor: [10, 11]
   });
 }
 
@@ -111,6 +115,18 @@ function formatHeadingDirection(deg) {
   const directions = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW', 'N'];
   const idx = Math.round((((deg % 360) + 360) % 360) / 45);
   return directions[idx] || '-';
+}
+
+function headingTextFromDeg(deg) {
+  if (typeof deg !== 'number' || Number.isNaN(deg)) return '';
+  const directions = ['North', 'Northeast', 'East', 'Southeast', 'South', 'Southwest', 'West', 'Northwest', 'North'];
+  const idx = Math.round((((deg % 360) + 360) % 360) / 45);
+  return directions[idx] || '';
+}
+
+function formatCounty(countyName) {
+  if (!countyName) return '';
+  return /county/i.test(countyName) ? countyName : `${countyName} County`;
 }
 
 // ========== DATA SOURCE CONFIG ==========
@@ -148,13 +164,23 @@ function updateStatus(status) {
   else setPill('offline', 'Offline');
 
   if (els.mapOverlayLocation) {
-    els.mapOverlayLocation.textContent = status.geocodingLocation || '';
+    const direction = headingTextFromDeg(data?.headingDeg);
+    const road = data?.streetName || 'Unspecified Road';
+    const travelLine = direction ? `Traveling ${direction}\non ${road}` : `Traveling\non ${road}`;
+    els.mapOverlayLocation.textContent = data ? travelLine : '';
   }
   if (els.mapOverlayHeading) {
-    els.mapOverlayHeading.textContent = status.geocodingDirection ? `Traveling ${status.geocodingDirection}` : '';
+    const cityOrCounty = data?.townName || formatCounty(data?.countyName);
+    els.mapOverlayHeading.textContent = data ? (cityOrCounty || '') : '';
   }
 
   updateMap(data);
+
+  const nextInterval = Number(status.webPollIntervalSeconds || 5);
+  if (Number.isFinite(nextInterval) && nextInterval > 0 && nextInterval !== pollIntervalSeconds) {
+    pollIntervalSeconds = nextInterval;
+    schedulePoll();
+  }
 }
 
 // ========== API POLLING CONFIG ==========
@@ -167,6 +193,11 @@ async function poll() {
   } catch {
     setPill('offline', 'Offline');
   }
+}
+
+function schedulePoll() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(poll, Math.max(1, pollIntervalSeconds) * 1000);
 }
 
 initMap();
@@ -200,4 +231,4 @@ if (els.styleSelect) {
   });
 }
 poll();
-setInterval(poll, 5000);
+schedulePoll();

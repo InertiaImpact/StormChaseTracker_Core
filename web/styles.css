@@ -47,6 +47,78 @@ main.single {
   position: relative;
 }
 
+.map-overlay {
+  position: absolute;
+  left: 50%;
+  top: 18px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
+  background: transparent;
+  border-radius: 0;
+  font-size: 18px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  z-index: 960;
+  min-width: 280px;
+  max-width: 360px;
+}
+
+.map-overlay .overlay-line {
+  line-height: 1.25;
+  padding: 12px 14px;
+  border-radius: 0;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.2);
+  position: relative;
+  color: #111827;
+}
+
+#mapOverlayHeading {
+  background: #f2c230;
+  color: #111827;
+  font-size: clamp(20px, 2.4vw, 28px);
+  font-weight: 900;
+  padding-left: 58px;
+  padding-top: 16px;
+  padding-bottom: 16px;
+  min-height: 54px;
+}
+
+#mapOverlayHeading::before {
+  content: '';
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  border-top: 2px solid #111827;
+  border-left: 2px solid #111827;
+  transform: translateY(-50%) rotate(135deg);
+}
+
+#mapOverlayHeading::after {
+  content: '';
+  position: absolute;
+  left: 24px;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  border-top: 2px solid #111827;
+  border-left: 2px solid #111827;
+  transform: translateY(-50%) rotate(135deg);
+}
+
+#mapOverlayLocation {
+  background: #ffffff;
+  color: #111827;
+  font-size: 17px;
+  font-weight: 800;
+  white-space: pre-line;
+}
+
 .status-overlay {
   position: absolute;
   top: 18px;
