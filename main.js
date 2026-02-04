@@ -116,6 +116,10 @@ const intellishiftState = {
   accountUsername: null
 };
 
+let intellishiftAuthInFlight = false;
+let intellishiftLastAuthAttemptAt = 0;
+const INTELLISHIFT_AUTH_RETRY_MS = 60000;
+
 function configPath() {
   return path.join(app.getPath('userData'), CONFIG_FILE);
 }
@@ -361,6 +365,26 @@ async function tryReauthorizeIntellishift(currentCfg) {
     const msg = err && err.message ? err.message : String(err);
     intellishiftState.lastError = msg;
     return false;
+  }
+}
+
+async function autoRefreshIntellishiftToken(currentCfg) {
+  const cfg = getIntellishiftCfg(currentCfg);
+  if (!cfg.enabled) return false;
+  if (!cfg.username || !cfg.password) return false;
+  if (isIntellishiftTokenValid()) return true;
+
+  const now = Date.now();
+  if (intellishiftAuthInFlight) return false;
+  if (now - intellishiftLastAuthAttemptAt < INTELLISHIFT_AUTH_RETRY_MS) return false;
+
+  intellishiftAuthInFlight = true;
+  intellishiftLastAuthAttemptAt = now;
+  try {
+    await tryReauthorizeIntellishift(currentCfg);
+    return isIntellishiftTokenValid();
+  } finally {
+    intellishiftAuthInFlight = false;
   }
 }
 
@@ -1079,6 +1103,8 @@ async function pollOnce() {
     let localData = null;
     let localError = null;
     let selectedLive = false;
+
+    await autoRefreshIntellishiftToken(cfg);
 
   if (intellishiftState.token && !isIntellishiftTokenValid()) {
     clearIntellishiftToken('Intellishift token expired');
