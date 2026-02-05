@@ -215,7 +215,7 @@ function saveReceiverConfig(newCfg) {
 }
 
 function createWindow() {
-  const iconPath = path.join(__dirname, 'assets', 'RoadWarrior.png');
+  const iconPath = path.join(__dirname, 'assets', 'RoadWarrior_Core.ico');
   mainWindow = new BrowserWindow({
     width: 1100,
     height: 760,
@@ -241,7 +241,7 @@ function createWindow() {
 }
 
 function createReceiverWindow() {
-  const iconPath = path.join(__dirname, 'assets', 'RoadWarrior.png');
+  const iconPath = path.join(__dirname, 'assets', 'RoadWarrior_Core.ico');
   receiverWindow = new BrowserWindow({
     width: 700,
     height: 640,
@@ -291,7 +291,7 @@ function setupMenu() {
 }
 
 function setupTray() {
-  const iconPath = path.join(__dirname, 'assets', 'RoadWarrior.png');
+  const iconPath = path.join(__dirname, 'assets', 'RoadWarrior_Core.ico');
   const icon = nativeImage.createFromPath(iconPath);
   tray = new Tray(icon);
   const contextMenu = Menu.buildFromTemplate([

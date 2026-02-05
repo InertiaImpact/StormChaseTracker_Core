@@ -66,6 +66,7 @@ let styleSelect = null;
 let currentConfig = null;
 let intellishiftVehiclesLoaded = false;
 let isDirty = false;
+let isSaving = false;
 
 function setDirty(dirty) {
   isDirty = dirty;
@@ -447,9 +448,15 @@ function updateStatus(status) {
 }
 
 async function saveConfigFromForm() {
-  const saved = await window.api.setConfig(getFormConfig());
-  applyConfig(saved);
-  return saved;
+  isSaving = true;
+  try {
+    const saved = await window.api.setConfig(getFormConfig());
+    applyConfig(saved);
+    setDirty(false);
+    return saved;
+  } finally {
+    isSaving = false;
+  }
 }
 
 window.api.getConfig().then((cfg) => {
@@ -480,8 +487,14 @@ visibilityButtons.forEach((btn) => {
 
 const configInputs = Array.from(document.querySelectorAll('#configPanel input, #configPanel select, #configPanel textarea'));
 configInputs.forEach((el) => {
-  el.addEventListener('input', () => setDirty(true));
-  el.addEventListener('change', () => setDirty(true));
+  el.addEventListener('input', () => {
+    if (isSaving) return;
+    setDirty(true);
+  });
+  el.addEventListener('change', () => {
+    if (isSaving) return;
+    setDirty(true);
+  });
 });
 
 if (els.saveBanner) {
