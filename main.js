@@ -215,7 +215,7 @@ function saveReceiverConfig(newCfg) {
 }
 
 function createWindow() {
-  const iconPath = path.join(__dirname, 'assets', 'RoadWarrior_Core.ico');
+  const iconPath = path.join(__dirname, 'assets', 'RoadWarrior_Core.png');
   mainWindow = new BrowserWindow({
     width: 1100,
     height: 760,
@@ -241,7 +241,7 @@ function createWindow() {
 }
 
 function createReceiverWindow() {
-  const iconPath = path.join(__dirname, 'assets', 'RoadWarrior_Core.ico');
+  const iconPath = path.join(__dirname, 'assets', 'RoadWarrior_Core.png');
   receiverWindow = new BrowserWindow({
     width: 700,
     height: 640,
