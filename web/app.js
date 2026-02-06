@@ -7,9 +7,13 @@ let followZoomValue = 13;
 let lastPosition = null;
 let pollTimer = null;
 let pollIntervalSeconds = 5;
+let pollCountdownTimer = null;
+let nextPollAt = null;
 
 const els = {
   statusPill: document.getElementById('status-pill'),
+  statusPillLabel: document.getElementById('statusPillLabel'),
+  statusPollTimer: document.getElementById('statusPollTimer'),
   followToggle: document.getElementById('followToggle'),
   followZoom: document.getElementById('followZoom'),
   styleSelect: document.getElementById('styleSelect'),
@@ -101,7 +105,35 @@ function formatTime(unixSeconds) {
 
 function setPill(status, label) {
   els.statusPill.className = `pill ${status}`;
-  els.statusPill.textContent = label;
+  if (els.statusPillLabel) {
+    els.statusPillLabel.textContent = label;
+  } else {
+    els.statusPill.textContent = label;
+  }
+}
+
+function updatePollCountdown() {
+  if (!els.statusPollTimer) return;
+  if (!nextPollAt) {
+    els.statusPollTimer.textContent = '--';
+    return;
+  }
+  const remaining = Math.max(0, Math.ceil((nextPollAt - Date.now()) / 1000));
+  els.statusPollTimer.textContent = `${remaining}s`;
+}
+
+function setNextPollCountdown(seconds) {
+  if (!els.statusPollTimer) return;
+  if (!Number.isFinite(seconds)) {
+    nextPollAt = null;
+    updatePollCountdown();
+    return;
+  }
+  nextPollAt = Date.now() + Math.max(0, seconds) * 1000;
+  updatePollCountdown();
+  if (!pollCountdownTimer) {
+    pollCountdownTimer = setInterval(updatePollCountdown, 1000);
+  }
 }
 
 function formatTownState(data) {
@@ -192,12 +224,15 @@ async function poll() {
     updateStatus(data);
   } catch {
     setPill('offline', 'Offline');
+  } finally {
+    setNextPollCountdown(pollIntervalSeconds);
   }
 }
 
 function schedulePoll() {
   if (pollTimer) clearInterval(pollTimer);
   pollTimer = setInterval(poll, Math.max(1, pollIntervalSeconds) * 1000);
+  setNextPollCountdown(pollIntervalSeconds);
 }
 
 initMap();

@@ -162,7 +162,7 @@ main {
 
 .map-overlay {
   position: absolute;
-  top: 64px;
+  top: 72px;
   left: 50%;
   transform: translateX(-50%);
   background: rgba(11, 18, 32, 0.82);
@@ -492,6 +492,18 @@ button.secondary:hover {
   border-radius: 999px;
   font-size: 14px;
   font-weight: 600;
+  position: relative;
+}
+
+.pill-timer {
+  position: absolute;
+  left: 50%;
+  bottom: 2px;
+  transform: translateX(-50%);
+  font-size: 10px;
+  font-weight: 500;
+  opacity: 0.8;
+  line-height: 1;
 }
 
 .pill.edge {
@@ -551,6 +563,26 @@ button.secondary:hover {
   border-bottom: 22px solid #2f6fed;
   transform-origin: 50% 70%;
   filter: drop-shadow(0 2px 2px rgba(0,0,0,0.2));
+}
+
+.unit-marker {
+  background: transparent;
+  border: none;
+}
+
+.unit-marker__circle {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #111827;
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  border: 2px solid #38bdf8;
+  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.25);
 }
 
 @keyframes pulse {

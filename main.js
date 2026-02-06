@@ -10,6 +10,7 @@ const SECRETS_FILE = 'secrets.json';
 const DEFAULT_CONFIG = {
   updateIntervalSeconds: 5,
   webPollIntervalSeconds: 5,
+  idlePollIntervalSeconds: 120,
   webHost: '0.0.0.0',
   webPort: 8787,
 
@@ -74,7 +75,8 @@ const state = {
   lastError: null,
   lastSource: null,
   isLive: false,
-  stoppedSinceUnix: null
+  stoppedSinceUnix: null,
+  stationarySinceAt: null
 };
 
 let mainWindow = null;
@@ -88,6 +90,8 @@ let lastXpressionSimple = null;
 let lastXpressionPayload = null;
 let reverseGeocodeLastAt = 0;
 let reverseGeocodeQueue = Promise.resolve();
+let lastReverseGeocodeKey = null;
+let lastReverseGeocodeResult = null;
 const countyBounds = new Map();
 
 let receiverCfg = null;
@@ -96,6 +100,9 @@ let receiverStatusTimer = null;
 let pollSeq = 0;
 let currentPollId = null;
 let pollRunning = false;
+let activePollIntervalSeconds = null;
+let lastPollAt = 0;
+const NO_MOVEMENT_THRESHOLD_MS = 30 * 60 * 1000;
 
 const receiverState = {
   listening: false,
@@ -108,6 +115,7 @@ const receiverState = {
 };
 
 const reverseCache = new Map();
+const reverseGeocodeInflight = new Map();
 const intellishiftState = {
   token: null,
   tokenExpiresAt: 0,
@@ -576,7 +584,10 @@ function buildCloudHeaders(currentCfg) {
 async function reverseGeocode(currentCfg, latitude, longitude) {
   const cacheKey = `${latitude.toFixed(6)},${longitude.toFixed(6)}`;
   if (reverseCache.has(cacheKey)) return reverseCache.get(cacheKey);
-
+  if (reverseGeocodeInflight.has(cacheKey)) return reverseGeocodeInflight.get(cacheKey);
+  if (cacheKey === lastReverseGeocodeKey) {
+    return lastReverseGeocodeResult || reverseCache.get(cacheKey) || null;
+  }
   reverseGeocodeQueue = reverseGeocodeQueue.then(async () => {
     const url = `${currentCfg.geocode.geocodeUrl}?lat=${latitude}&lon=${longitude}&api_key=${encodeURIComponent(currentCfg.geocode.geocodeApiKey)}`;
     const now = Date.now();
@@ -584,6 +595,8 @@ async function reverseGeocode(currentCfg, latitude, longitude) {
     if (waitMs) await sleep(waitMs);
     reverseGeocodeLastAt = Date.now();
     try {
+      lastReverseGeocodeKey = cacheKey;
+      console.log(`[geocode] request lat=${latitude.toFixed(6)} lon=${longitude.toFixed(6)}`);
       const data = await fetchJson(url, {}, 12000);
       const address = data.address || {};
       const result = {
@@ -593,15 +606,22 @@ async function reverseGeocode(currentCfg, latitude, longitude) {
         stateName: address.state ?? address.state_code ?? null
       };
       reverseCache.set(cacheKey, result);
+      lastReverseGeocodeResult = result;
       return result;
     } catch {
       const result = { streetName: 'Unspecified Area', townName: null, countyName: null, stateName: null };
       reverseCache.set(cacheKey, result);
+      lastReverseGeocodeResult = result;
       return result;
     }
   });
 
-  return reverseGeocodeQueue;
+  const inflight = reverseGeocodeQueue
+    .finally(() => {
+      reverseGeocodeInflight.delete(cacheKey);
+    });
+  reverseGeocodeInflight.set(cacheKey, inflight);
+  return inflight;
 }
 
 function enqueueReverseGeocode(currentCfg, payload) {
@@ -889,11 +909,61 @@ function isRecent(data, maxAgeSeconds) {
   return ageMs <= maxAgeSeconds * 1000;
 }
 
+function getPositionKey(data) {
+  if (!data || typeof data.latitude !== 'number' || typeof data.longitude !== 'number') return null;
+  return `${data.latitude.toFixed(6)},${data.longitude.toFixed(6)}`;
+}
+
+function detectMovement(prevData, nextData) {
+  if (!nextData) return false;
+  if (typeof nextData.speedMph === 'number' && nextData.speedMph >= 1) return true;
+  const prevKey = getPositionKey(prevData);
+  const nextKey = getPositionKey(nextData);
+  return !!prevKey && !!nextKey && prevKey !== nextKey;
+}
+
+function updateMovementState(prevData, nextData) {
+  if (!nextData) return;
+  const moved = detectMovement(prevData, nextData);
+  if (moved) {
+    state.stationarySinceAt = null;
+  } else if (!state.stationarySinceAt) {
+    state.stationarySinceAt = Date.now();
+  }
+}
+
+function getDesiredPollIntervalSeconds() {
+  const baseInterval = Math.max(2, cfg?.updateIntervalSeconds ?? 5);
+  const idleInterval = Math.max(2, cfg?.idlePollIntervalSeconds ?? 120);
+  if (state.stationarySinceAt && Date.now() - state.stationarySinceAt >= NO_MOVEMENT_THRESHOLD_MS) {
+    return idleInterval;
+  }
+  return baseInterval;
+}
+
+function schedulePolling(intervalSeconds) {
+  const nextInterval = Math.max(2, intervalSeconds);
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(pollOnce, nextInterval * 1000);
+  activePollIntervalSeconds = nextInterval;
+}
+
+function maybeAdjustPollingCadence() {
+  const desiredInterval = getDesiredPollIntervalSeconds();
+  if (!activePollIntervalSeconds || desiredInterval !== activePollIntervalSeconds) {
+    schedulePolling(desiredInterval);
+  }
+}
+
 function buildStatusPayload() {
   const now = Date.now();
   const data = state.lastData;
   const dataAgeSeconds = data?.updatedAtUnix ? Math.max(0, Math.floor((now - data.updatedAtUnix * 1000) / 1000)) : null;
   const geocoding = buildGeocodeString(data, dataAgeSeconds, state.isLive);
+  const pollIntervalSeconds = activePollIntervalSeconds ?? Math.max(2, cfg?.updateIntervalSeconds ?? 5);
+  const nextPollInSeconds = lastPollAt
+    ? Math.max(0, Math.ceil((lastPollAt + pollIntervalSeconds * 1000 - now) / 1000))
+    : null;
 
   return {
     useLocal: state.useLocal,
@@ -905,6 +975,8 @@ function buildStatusPayload() {
     dataAgeSeconds,
     data,
     webPollIntervalSeconds: cfg?.webPollIntervalSeconds ?? 5,
+    pollIntervalSeconds,
+    nextPollInSeconds,
     geocodingLocation: geocoding.location,
     geocodingDirection: geocoding.direction
   };
@@ -1099,7 +1171,9 @@ async function pollOnce() {
   try {
     const pollId = ++pollSeq;
     currentPollId = pollId;
+    const prevData = state.lastData;
     const now = Date.now();
+    lastPollAt = now;
     let localData = null;
     let localError = null;
     let selectedLive = false;
@@ -1230,7 +1304,7 @@ async function pollOnce() {
         }
       }
 
-      if (!state.useLocal && !selected) {
+      if (!state.useLocal && (!selected || !selectedLive)) {
         try {
           const intellishiftData = await fetchIntellishiftLocation(cfg);
           if (intellishiftData) {
@@ -1266,6 +1340,7 @@ async function pollOnce() {
 
   state.lastError = localError || state.lastError;
   if (selected) {
+    updateMovementState(prevData, selected);
     state.lastData = selected;
     state.lastSource = selectedSource;
     state.isLive = selectedLive;
@@ -1278,6 +1353,7 @@ async function pollOnce() {
     sendStatus();
     return;
   } finally {
+    maybeAdjustPollingCadence();
     pollRunning = false;
   }
 }
@@ -1285,7 +1361,7 @@ async function pollOnce() {
 function startPolling() {
   if (pollTimer) clearInterval(pollTimer);
   pollOnce();
-  pollTimer = setInterval(pollOnce, Math.max(2, cfg.updateIntervalSeconds) * 1000);
+  schedulePolling(getDesiredPollIntervalSeconds());
 }
 
 app.whenReady().then(() => {
@@ -1352,6 +1428,11 @@ app.whenReady().then(() => {
       }
       return { ok: false, message: msg, vehicles: [] };
     }
+  });
+
+  ipcMain.handle('poll-now', async () => {
+    await pollOnce();
+    return { ok: true };
   });
 
   ipcMain.handle('toggle-fullscreen', (_e, enable) => {

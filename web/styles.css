@@ -188,6 +188,18 @@ main.single {
   border-radius: 999px;
   font-size: 14px;
   font-weight: 600;
+  position: relative;
+}
+
+.pill-timer {
+  position: absolute;
+  left: 50%;
+  bottom: 2px;
+  transform: translateX(-50%);
+  font-size: 10px;
+  font-weight: 500;
+  opacity: 0.8;
+  line-height: 1;
 }
 
 .pill.ok {

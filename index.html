@@ -14,7 +14,10 @@
       <p>Local-first GPS with NetCloud fallback</p>
     </div>
     <div class="status-stack">
-      <div id="status-pill" class="pill idle">Idle</div>
+      <div id="status-pill" class="pill idle">
+        <span class="pill-label" id="statusPillLabel">Idle</span>
+        <span class="pill-timer" id="statusPollTimer">--</span>
+      </div>
     </div>
   </header>
 
@@ -64,6 +67,19 @@
     <section class="panel" id="configPanel">
       <h2>Configuration</h2>
       
+      <!-- ========== GENERAL CONFIG ========== -->
+      <div class="config-section">
+        <h3>General Config</h3>
+        <div class="grid">
+          <label>No-Movement Poll Interval (s)
+            <input id="idlePollIntervalSeconds" type="number" />
+          </label>
+          <label>Manual Poll
+            <button id="pollNowBtn" type="button">Poll Now</button>
+          </label>
+        </div>
+      </div>
+
       <!-- ========== DATA SOURCE CONFIG ========== -->
       <div class="config-section">
         <h3>Data Source Config</h3>
@@ -191,13 +207,6 @@
           <label>Output Path
             <input id="xpressionOutputPath" type="text" placeholder="\\KGAN-XPN-MOSGW\Local_KGAN_Locator\" />
           </label>
-        </div>
-      </div>
-
-      <!-- ========== GENERAL CONFIG ========== -->
-      <div class="config-section">
-        <h3>General Config</h3>
-        <div class="grid">
         </div>
       </div>
 

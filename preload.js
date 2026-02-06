@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('api', {
   onStatus: (cb) => ipcRenderer.on('status', (_e, data) => cb(data)),
   onToggleConfig: (cb) => ipcRenderer.on('toggle-config', (_e, show) => cb(show)),
   toggleFullscreen: (enable) => ipcRenderer.invoke('toggle-fullscreen', enable),
+  pollNow: () => ipcRenderer.invoke('poll-now'),
   intellishiftAuthorize: (creds) => ipcRenderer.invoke('intellishift-auth', creds),
   intellishiftGetVehicles: () => ipcRenderer.invoke('intellishift-vehicles'),
   intellishiftTokenStatus: () => ipcRenderer.invoke('intellishift-token-status'),
