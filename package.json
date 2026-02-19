@@ -5,9 +5,38 @@
   "main": "main.js",
   "private": true,
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
   },
   "devDependencies": {
-    "electron": "^31.0.0"
+    "electron": "^31.0.0",
+    "electron-builder": "^26.7.0"
+  },
+  "overrides": {
+    "@electron/asar": "3.4.1",
+    "glob": "^11.0.1",
+    "tar": "^7.5.7"
+  },
+  "build": {
+    "appId": "com.sbg.stormchasetracker.core",
+    "productName": "StormChaseTracker Core",
+    "icon": "assets/RoadWarrior_Core.ico",
+    "asar": true,
+    "files": [
+      "**/*",
+      "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme,LICENSE,LICENSE.md,LICENSE.txt}",
+      "!**/node_modules/.bin",
+      "!**/*.map"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "assets/RoadWarrior_Core.ico"
+    }
   }
 }

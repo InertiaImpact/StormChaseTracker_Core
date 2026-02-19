@@ -3,8 +3,10 @@ const path = require('path');
 const fs = require('fs');
 const http = require('http');
 
-const CONFIG_FILE = 'rwmapv2-config.json';
-const RECEIVER_CONFIG_FILE = 'rwmapv2-receiver-config.json';
+const CONFIG_FILE = 'stormchasetracker-core-config.json';
+const RECEIVER_CONFIG_FILE = 'stormchasetracker-core-receiver-config.json';
+const LEGACY_CONFIG_FILE = 'rwmapv2-config.json';
+const LEGACY_RECEIVER_CONFIG_FILE = 'rwmapv2-receiver-config.json';
 const SECRETS_FILE = 'secrets.json';
 
 const DEFAULT_CONFIG = {
@@ -132,12 +134,42 @@ function configPath() {
   return path.join(app.getPath('userData'), CONFIG_FILE);
 }
 
+function legacyConfigPath() {
+  return path.join(app.getPath('userData'), LEGACY_CONFIG_FILE);
+}
+
 function secretsPath() {
   return path.join(__dirname, SECRETS_FILE);
 }
 
 function receiverConfigPath() {
   return path.join(app.getPath('userData'), RECEIVER_CONFIG_FILE);
+}
+
+function legacyReceiverConfigPath() {
+  return path.join(app.getPath('userData'), LEGACY_RECEIVER_CONFIG_FILE);
+}
+
+function migrateLegacyConfigFiles() {
+  try {
+    const legacyPath = legacyConfigPath();
+    const nextPath = configPath();
+    if (fs.existsSync(legacyPath) && !fs.existsSync(nextPath)) {
+      fs.renameSync(legacyPath, nextPath);
+    }
+  } catch (err) {
+    console.warn('Failed to migrate legacy config file:', err);
+  }
+
+  try {
+    const legacyPath = legacyReceiverConfigPath();
+    const nextPath = receiverConfigPath();
+    if (fs.existsSync(legacyPath) && !fs.existsSync(nextPath)) {
+      fs.renameSync(legacyPath, nextPath);
+    }
+  } catch (err) {
+    console.warn('Failed to migrate legacy receiver config file:', err);
+  }
 }
 
 function normalizeLegacyConfig(parsed) {
@@ -223,7 +255,7 @@ function saveReceiverConfig(newCfg) {
 }
 
 function createWindow() {
-  const iconPath = path.join(__dirname, 'assets', 'RoadWarrior_Core.png');
+  const iconPath = path.join(__dirname, 'assets', 'RoadWarrior_Core.ico');
   mainWindow = new BrowserWindow({
     width: 1100,
     height: 760,
@@ -249,7 +281,7 @@ function createWindow() {
 }
 
 function createReceiverWindow() {
-  const iconPath = path.join(__dirname, 'assets', 'RoadWarrior_Core.png');
+  const iconPath = path.join(__dirname, 'assets', 'RoadWarrior_Core.ico');
   receiverWindow = new BrowserWindow({
     width: 700,
     height: 640,
@@ -328,7 +360,16 @@ function sleep(ms) {
 }
 
 function getIntellishiftCfg(currentCfg) {
-  return currentCfg?.dataSource?.intellishift || {};
+  const defaults = DEFAULT_CONFIG?.dataSource?.intellishift || {};
+  const raw = currentCfg?.dataSource?.intellishift || {};
+  const baseUrl = typeof raw.baseUrl === 'string' ? raw.baseUrl.trim() : raw.baseUrl;
+  const authUrl = typeof raw.authUrl === 'string' ? raw.authUrl.trim() : raw.authUrl;
+  return {
+    ...defaults,
+    ...raw,
+    baseUrl: baseUrl || defaults.baseUrl,
+    authUrl: authUrl || defaults.authUrl
+  };
 }
 
 function isIntellishiftTokenValid() {
@@ -509,6 +550,8 @@ async function fetchIntellishiftLocation(currentCfg, options = {}) {
     updatedAtUnix,
     headingDeg: typeof entry.headingDegrees === 'number' ? entry.headingDegrees : null,
     speedMph: typeof entry.speed === 'number' ? entry.speed : null,
+    vehicleId: Number.isFinite(Number(entry.vehicleId)) ? Number(entry.vehicleId) : vehicleId,
+    vehicleName: entry.name ?? entry.vehicleName ?? entry.assetName ?? null,
     streetName: entry.street ?? null,
     townName: entry.city ?? null,
     countyName: entry.county ?? null,
@@ -1083,6 +1126,19 @@ function startReceiverServer(currentCfg) {
       return;
     }
 
+    if (req.method === 'GET' && reqPath === '/assets/RoadWarrior.png') {
+      const assetPath = path.join(__dirname, 'assets', 'RoadWarrior.png');
+      try {
+        const data = fs.readFileSync(assetPath);
+        res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' });
+        res.end(data);
+      } catch {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('Not found');
+      }
+      return;
+    }
+
     if (req.method === 'GET' && reqPath === '/api/status') {
       const payload = buildStatusPayload();
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
@@ -1365,6 +1421,7 @@ function startPolling() {
 }
 
 app.whenReady().then(() => {
+  migrateLegacyConfigFiles();
   cfg = loadConfig();
   receiverCfg = loadReceiverConfig();
   createWindow();

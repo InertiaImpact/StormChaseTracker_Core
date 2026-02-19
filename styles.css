@@ -284,6 +284,27 @@ main {
   border-bottom: 2px solid #d7dce9;
 }
 
+.info-banner {
+  margin: 10px 0 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  color: #1e293b;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.info-banner ul {
+  margin: 8px 0 0 18px;
+  padding: 0;
+  font-weight: 500;
+}
+
+.info-banner li {
+  margin: 4px 0;
+}
+
 label {
   display: flex;
   flex-direction: column;
