@@ -49,6 +49,7 @@ html, body {
   inset: var(--keyer-border);
   width: auto;
   height: auto;
+  max-height: none;
   min-height: 0;
   flex: none;
   border-radius: 8px;

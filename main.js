@@ -75,10 +75,28 @@ const state = {
   lastLocalCheckAt: null,
   lastData: null,
   lastError: null,
+  sourceErrors: {
+    local: null,
+    cloud: null,
+    intellishift: null
+  },
   lastSource: null,
   isLive: false,
   stoppedSinceUnix: null,
-  stationarySinceAt: null
+  stationarySinceAt: null,
+  activeRemoteProvider: null,
+  sourceHealth: {
+    local: { consecutiveSuccesses: 0, consecutiveFailures: 0 },
+    cloud: { consecutiveSuccesses: 0, consecutiveFailures: 0 },
+    intellishift: { consecutiveSuccesses: 0, consecutiveFailures: 0 }
+  },
+  sourceCache: {
+    local: null,
+    cloud: null,
+    intellishift: null
+  },
+  lastAcceptedTimestampBySource: new Map(),
+  lastAcceptedPositionBySource: new Map()
 };
 
 let mainWindow = null;
@@ -129,6 +147,10 @@ const intellishiftState = {
 let intellishiftAuthInFlight = false;
 let intellishiftLastAuthAttemptAt = 0;
 const INTELLISHIFT_AUTH_RETRY_MS = 60000;
+const REMOTE_SWITCH_FAILURE_THRESHOLD = 2;
+const REMOTE_SWITCH_SUCCESS_THRESHOLD = 2;
+const MAX_PLAUSIBLE_SPEED_MPH = 220;
+const POSITION_BACKWARD_ALLOWANCE_SECONDS = 5;
 
 function configPath() {
   return path.join(app.getPath('userData'), CONFIG_FILE);
@@ -598,6 +620,7 @@ function normalizeLocalPayload(payload, lastUpdateUnix) {
   return {
     latitude,
     longitude,
+    deviceId: payload.device ?? payload.deviceId ?? null,
     updatedAtUnix: updatedUnix,
     updatedAtSource,
     headingDeg,
@@ -834,13 +857,9 @@ function getCountyQualifier(bounds, lat, lon) {
 function formatXpressionSimple(data) {
   if (!data) return '';
   if (data.townName) return data.townName;
-  updateCountyBounds(data);
-  const key = getCountyKey(data);
-  const bounds = key ? countyBounds.get(key) : null;
-  const qualifier = getCountyQualifier(bounds, data.latitude, data.longitude);
   const countyLabel = formatCountyLabel(data.countyName);
   if (!countyLabel) return '';
-  return qualifier ? `${qualifier} ${countyLabel}` : countyLabel;
+  return countyLabel;
 }
 
 function getXpressionOutputBase(currentCfg) {
@@ -957,6 +976,134 @@ function getPositionKey(data) {
   return `${data.latitude.toFixed(6)},${data.longitude.toFixed(6)}`;
 }
 
+function markSourceHealth(sourceName, isSuccess) {
+  const bucket = state.sourceHealth[sourceName];
+  if (!bucket) return;
+  if (isSuccess) {
+    bucket.consecutiveSuccesses += 1;
+    bucket.consecutiveFailures = 0;
+  } else {
+    bucket.consecutiveFailures += 1;
+    bucket.consecutiveSuccesses = 0;
+  }
+}
+
+function getSourceStaleSeconds(sourceName, currentCfg) {
+  if (sourceName === 'local') return Math.max(2, Number(currentCfg?.dataSource?.localFailoverSeconds ?? 30));
+  if (sourceName === 'cloud') return Math.max(30, Number(currentCfg?.cradlepoint?.cloudStaleSeconds ?? 300));
+  if (sourceName === 'intellishift') return Math.max(30, Number(currentCfg?.dataSource?.intellishift?.staleSeconds ?? 300));
+  return 300;
+}
+
+function sourceLabelFor(sourceName, isLive) {
+  if (sourceName === 'local') return isLive ? 'EdgeReceiver' : 'EdgeReceiver (Stale)';
+  if (sourceName === 'cloud') return isLive ? 'NetCloud' : 'NetCloud (Stale)';
+  if (sourceName === 'intellishift') return isLive ? 'Intellishift' : 'Intellishift (Stale)';
+  return 'Unknown';
+}
+
+function sourcePriority(sourceName) {
+  if (sourceName === 'local') return 3;
+  if (sourceName === 'cloud') return 2;
+  if (sourceName === 'intellishift') return 1;
+  return 0;
+}
+
+function candidateTsUnix(candidate) {
+  if (!candidate) return null;
+  return Number.isFinite(candidate.updatedAtUnix) ? candidate.updatedAtUnix : null;
+}
+
+function chooseNewestCandidate(candidates) {
+  if (!Array.isArray(candidates) || !candidates.length) return null;
+  const sorted = [...candidates].sort((a, b) => {
+    if (b.updatedAtUnix !== a.updatedAtUnix) return b.updatedAtUnix - a.updatedAtUnix;
+    return sourcePriority(b.sourceName) - sourcePriority(a.sourceName);
+  });
+  return sorted[0] || null;
+}
+
+function sourceIdentityKey(sourceName, data) {
+  if (sourceName === 'intellishift') {
+    const vehicleId = data?.vehicleId;
+    return `intellishift:${vehicleId != null ? vehicleId : 'default'}`;
+  }
+  if (sourceName === 'local') {
+    const deviceId = data?.deviceId || data?.device || 'default';
+    return `local:${deviceId}`;
+  }
+  if (sourceName === 'cloud') {
+    return 'cloud:default';
+  }
+  return `${sourceName || 'unknown'}:default`;
+}
+
+function haversineMiles(lat1, lon1, lat2, lon2) {
+  const toRad = (v) => (v * Math.PI) / 180;
+  const R = 3958.7613;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+function validateCandidateSample(sourceName, data) {
+  if (!data || typeof data.latitude !== 'number' || typeof data.longitude !== 'number') {
+    return { ok: false, reason: `${sourceName}: missing coordinates` };
+  }
+  if (data.latitude < -90 || data.latitude > 90 || data.longitude < -180 || data.longitude > 180) {
+    return { ok: false, reason: `${sourceName}: invalid coordinate range` };
+  }
+
+  const key = sourceIdentityKey(sourceName, data);
+  const updatedAtUnix = Number.isFinite(data.updatedAtUnix) ? data.updatedAtUnix : null;
+
+  if (updatedAtUnix != null) {
+    const lastAcceptedTs = state.lastAcceptedTimestampBySource.get(key);
+    if (Number.isFinite(lastAcceptedTs) && updatedAtUnix + POSITION_BACKWARD_ALLOWANCE_SECONDS < lastAcceptedTs) {
+      return {
+        ok: false,
+        reason: `${sourceName}: out-of-order timestamp (${updatedAtUnix} < ${lastAcceptedTs})`
+      };
+    }
+
+    const lastAcceptedPos = state.lastAcceptedPositionBySource.get(key);
+    if (lastAcceptedPos && Number.isFinite(lastAcceptedPos.updatedAtUnix)) {
+      const dtSeconds = updatedAtUnix - lastAcceptedPos.updatedAtUnix;
+      const miles = haversineMiles(lastAcceptedPos.latitude, lastAcceptedPos.longitude, data.latitude, data.longitude);
+      if (dtSeconds > 0) {
+        const mph = miles / (dtSeconds / 3600);
+        if (mph > MAX_PLAUSIBLE_SPEED_MPH) {
+          return {
+            ok: false,
+            reason: `${sourceName}: implausible jump (${mph.toFixed(1)} mph)`
+          };
+        }
+      } else if (dtSeconds === 0 && miles > 0.05) {
+        return {
+          ok: false,
+          reason: `${sourceName}: position changed without timestamp advance`
+        };
+      }
+    }
+  }
+
+  return { ok: true, key, updatedAtUnix };
+}
+
+function recordAcceptedSample(sourceName, data, key, updatedAtUnix) {
+  const sourceKey = key || sourceIdentityKey(sourceName, data);
+  if (Number.isFinite(updatedAtUnix)) {
+    state.lastAcceptedTimestampBySource.set(sourceKey, updatedAtUnix);
+    state.lastAcceptedPositionBySource.set(sourceKey, {
+      latitude: data.latitude,
+      longitude: data.longitude,
+      updatedAtUnix
+    });
+  }
+}
+
 function detectMovement(prevData, nextData) {
   if (!nextData) return false;
   if (typeof nextData.speedMph === 'number' && nextData.speedMph >= 1) return true;
@@ -998,6 +1145,65 @@ function maybeAdjustPollingCadence() {
   }
 }
 
+function pillStyleForClass(className) {
+  if (className === 'edge') {
+    return { background: '#22c55e', color: '#0b1220', border: '#15803d' };
+  }
+  if (className === 'netcloud') {
+    return { background: '#60a5fa', color: '#0b1220', border: '#2563eb' };
+  }
+  if (className === 'intellishift') {
+    return { background: '#a78bfa', color: '#0b1220', border: '#7c3aed' };
+  }
+  if (className === 'stale') {
+    return { background: '#f59e0b', color: '#0b1220', border: '#b45309' };
+  }
+  if (className === 'offline') {
+    return { background: '#ef4444', color: '#ffffff', border: '#b91c1c' };
+  }
+  if (className === 'warn') {
+    return { background: '#f59e0b', color: '#0b1220', border: '#b45309' };
+  }
+  return null;
+}
+
+function buildStatusPill(lastSource, isLive, data) {
+  const sourceLabel = String(lastSource || '');
+  const sourceKey = sourceLabel.toLowerCase();
+  const forcedMatch = sourceLabel.match(/^Forced\s+(local|cloud|intellishift|offline)/i);
+
+  if (forcedMatch) {
+    const forcedRaw = forcedMatch[1].toLowerCase();
+    const forcedLabel = forcedRaw === 'local'
+      ? 'Edge'
+      : (forcedRaw === 'cloud' ? 'NetCloud' : (forcedRaw === 'intellishift' ? 'Intellishift' : 'Offline'));
+    const forcedClass = forcedRaw === 'local'
+      ? 'edge'
+      : (forcedRaw === 'cloud' ? 'netcloud' : (forcedRaw === 'intellishift' ? 'intellishift' : 'offline'));
+    return {
+      className: forcedClass,
+      label: `Forced ${forcedLabel}`,
+      state: 'forced',
+      source: forcedRaw === 'local' ? 'edge' : (forcedRaw === 'cloud' ? 'netcloud' : forcedRaw),
+      style: pillStyleForClass(forcedClass)
+    };
+  }
+
+  if (data && isLive && sourceKey.includes('edge')) {
+    return { className: 'edge', label: 'Edge', state: 'live', source: 'edge', style: pillStyleForClass('edge') };
+  }
+  if (data && isLive && sourceKey.includes('netcloud')) {
+    return { className: 'netcloud', label: 'NetCloud', state: 'live', source: 'netcloud', style: pillStyleForClass('netcloud') };
+  }
+  if (data && isLive && sourceKey.includes('intellishift')) {
+    return { className: 'intellishift', label: 'Intellishift', state: 'live', source: 'intellishift', style: pillStyleForClass('intellishift') };
+  }
+  if (data && !isLive) {
+    return { className: 'stale', label: 'Stale', state: 'stale', source: null, style: pillStyleForClass('stale') };
+  }
+  return { className: 'offline', label: 'Offline', state: 'offline', source: null, style: pillStyleForClass('offline') };
+}
+
 function buildStatusPayload() {
   const now = Date.now();
   const data = state.lastData;
@@ -1020,6 +1226,9 @@ function buildStatusPayload() {
     webPollIntervalSeconds: cfg?.webPollIntervalSeconds ?? 5,
     pollIntervalSeconds,
     nextPollInSeconds,
+    statusVersion: 2,
+    statusPill: buildStatusPill(state.lastSource, state.isLive, data),
+    generatedAtMs: now,
     geocodingLocation: geocoding.location,
     geocodingDirection: geocoding.direction
   };
@@ -1183,8 +1392,14 @@ function startReceiverServer(currentCfg) {
           console.log('[ingest] received payload (unable to summarize).');
         }
 
+        const ackPayload = buildStatusPayload();
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'ok' }));
+        res.end(JSON.stringify({
+          status: 'ok',
+          coreStatus: ackPayload.statusPill,
+          coreGeneratedAtMs: ackPayload.generatedAtMs,
+          coreStatusVersion: ackPayload.statusVersion
+        }));
       });
       return;
     }
@@ -1230,181 +1445,229 @@ async function pollOnce() {
     const prevData = state.lastData;
     const now = Date.now();
     lastPollAt = now;
-    let localData = null;
-    let localError = null;
+    state.sourceErrors.local = null;
+    state.sourceErrors.cloud = null;
+    state.sourceErrors.intellishift = null;
+
     let selectedLive = false;
+    let selected = null;
+    let selectedSource = null;
+
+    const tryAcceptCandidate = (sourceName, candidate, label, isLive) => {
+      if (!candidate) return false;
+      const validation = validateCandidateSample(sourceName, candidate);
+      if (!validation.ok) {
+        state.sourceErrors[sourceName] = validation.reason;
+        markSourceHealth(sourceName, false);
+        console.warn(`[poll#${pollId}] rejected ${sourceName} sample: ${validation.reason}`);
+        return false;
+      }
+
+      recordAcceptedSample(sourceName, candidate, validation.key, validation.updatedAtUnix);
+      state.sourceErrors[sourceName] = null;
+      selected = candidate;
+      selectedSource = label;
+      selectedLive = !!isLive;
+      return true;
+    };
 
     await autoRefreshIntellishiftToken(cfg);
 
-  if (intellishiftState.token && !isIntellishiftTokenValid()) {
-    clearIntellishiftToken('Intellishift token expired');
-    sendIntellishiftTokenStatus();
-  }
+    if (intellishiftState.token && !isIntellishiftTokenValid()) {
+      clearIntellishiftToken('Intellishift token expired');
+      sendIntellishiftTokenStatus();
+    }
 
-  const forceSource = String(cfg.testing?.forceSource || 'off').toLowerCase();
-  if (forceSource === 'offline') {
-    state.useLocal = false;
-    state.lastError = 'Testing override: Offline/None';
-    state.lastData = null;
-    state.lastSource = 'Forced Offline';
-    state.isLive = false;
-    sendStatus();
-    return;
-  }
+    const forceSource = String(cfg.testing?.forceSource || 'off').toLowerCase();
+    if (forceSource === 'offline') {
+      state.useLocal = false;
+      state.lastError = 'Testing override: Offline/None';
+      state.lastData = null;
+      state.lastSource = 'Forced Offline';
+      state.isLive = false;
+      sendStatus();
+      return;
+    }
 
-  const forcedFetch = async () => {
-    if (forceSource === 'local') return await fetchLocalData(cfg);
-    if (forceSource === 'cloud') return await fetchCloudData(cfg);
-    if (forceSource === 'intellishift') return await fetchIntellishiftLocation(cfg, { force: true });
-    return null;
-  };
+    const forcedFetch = async () => {
+      if (forceSource === 'local') return await fetchLocalData(cfg);
+      if (forceSource === 'cloud') return await fetchCloudData(cfg);
+      if (forceSource === 'intellishift') return await fetchIntellishiftLocation(cfg, { force: true });
+      return null;
+    };
 
-  if (forceSource !== 'off') {
-    try {
-      const forcedData = await forcedFetch();
-      if (forcedData) {
-        if (!forcedData.updatedAtUnix) {
-          forcedData.updatedAtUnix = Date.now() / 1000;
+    if (forceSource !== 'off') {
+      try {
+        const forcedData = await forcedFetch();
+        if (forcedData) {
+          if (!forcedData.updatedAtUnix) {
+            forcedData.updatedAtUnix = Date.now() / 1000;
+          }
+          const forcedSourceName = forceSource === 'cloud'
+            ? 'cloud'
+            : (forceSource === 'intellishift' ? 'intellishift' : 'local');
+          if (tryAcceptCandidate(forcedSourceName, forcedData, `Forced ${forceSource}`, true)) {
+            markSourceHealth(forcedSourceName, true);
+            state.useLocal = forceSource === 'local';
+            state.lastData = selected;
+            state.lastSource = selectedSource;
+            state.isLive = true;
+            state.lastError = null;
+            sendStatus();
+            return;
+          }
         }
-        const isFresh = true;
-        state.useLocal = forceSource === 'local';
-        state.lastData = forcedData;
+        state.useLocal = false;
+        state.lastData = null;
         state.lastSource = `Forced ${forceSource}`;
-        state.isLive = isFresh;
-        state.lastError = null;
+        state.isLive = false;
+        state.lastError = state.sourceErrors[forceSource] || `No data from forced source: ${forceSource}`;
+        sendStatus();
+        return;
+      } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        state.lastError = msg;
+        if (forceSource in state.sourceErrors) state.sourceErrors[forceSource] = msg;
+        state.useLocal = false;
+        state.lastData = null;
+        state.lastSource = `Forced ${forceSource}`;
+        state.isLive = false;
         sendStatus();
         return;
       }
-      state.useLocal = false;
-      state.lastData = null;
-      state.lastSource = `Forced ${forceSource}`;
-      state.isLive = false;
-      state.lastError = `No data from forced source: ${forceSource}`;
-      sendStatus();
-      return;
-    } catch (err) {
-      state.lastError = err && err.message ? err.message : String(err);
-      state.useLocal = false;
-      state.lastData = null;
-      state.lastSource = `Forced ${forceSource}`;
-      state.isLive = false;
-      sendStatus();
-      return;
     }
-  }
 
-  try {
-    localData = await fetchLocalData(cfg);
-  } catch (err) {
-    localError = err && err.message ? err.message : String(err);
-  }
+    const fetchSource = async (sourceName) => {
+      try {
+        if (sourceName === 'local') {
+          return await fetchLocalData(cfg);
+        }
+        if (sourceName === 'cloud') {
+          return await fetchCloudData(cfg);
+        }
+        if (sourceName === 'intellishift') {
+          return await fetchIntellishiftLocation(cfg);
+        }
+        return null;
+      } catch (err) {
+        if (sourceName === 'intellishift' && (String(err).includes('HTTP 401') || String(err).includes('token'))) {
+          clearIntellishiftToken('Intellishift authorization required');
+          sendIntellishiftTokenStatus();
+        }
+        throw err;
+      }
+    };
 
-  const localUpdatedAt = localData?.updatedAtUnix ?? null;
-  const localAgeSeconds = localUpdatedAt ? Math.floor(Date.now() / 1000 - localUpdatedAt) : null;
-  const localIsRecent = localData && isRecent(localData, cfg.dataSource.localFailoverSeconds);
-  if (localData && !localUpdatedAt) {
-    console.log(`[stale#${pollId}] Local data missing updatedAtUnix (ts_unix/last_update_unix).`);
-  }
-  if (localData && localUpdatedAt && !localIsRecent) {
-    console.log(`[stale#${pollId}] Local data age ${localAgeSeconds}s > ${cfg.dataSource.localFailoverSeconds}s (now=${Math.floor(now / 1000)} updatedAtUnix=${localUpdatedAt}).`);
-  }
-  console.log(`[poll#${pollId}] localIsRecent=${!!localIsRecent} localAge=${localAgeSeconds ?? 'n/a'}s failover=${cfg.dataSource.localFailoverSeconds}s`);
-
-  let selected = null;
-  let selectedSource = null;
-
-  if (localIsRecent) {
-    state.useLocal = true;
-    state.lastLocalSeenAt = now;
+    const sourceNames = ['local', 'cloud', 'intellishift'];
+    const settled = await Promise.allSettled(sourceNames.map((sourceName) => fetchSource(sourceName)));
     state.lastLocalCheckAt = now;
-    selected = localData;
-    selectedSource = 'EdgeReceiver';
-    selectedLive = true;
-  } else {
-    if (state.useLocal) {
-      if (!state.lastLocalSeenAt || now - state.lastLocalSeenAt > cfg.dataSource.localFailoverSeconds * 1000) {
-        state.useLocal = false;
+
+    for (let i = 0; i < sourceNames.length; i += 1) {
+      const sourceName = sourceNames[i];
+      const staleSeconds = getSourceStaleSeconds(sourceName, cfg);
+      const result = settled[i];
+
+      if (result.status === 'rejected') {
+        const msg = result.reason && result.reason.message ? result.reason.message : String(result.reason);
+        state.sourceErrors[sourceName] = msg;
+        markSourceHealth(sourceName, false);
+        continue;
       }
-      state.lastLocalCheckAt = now;
+
+      const candidate = result.value;
+      if (!candidate) {
+        markSourceHealth(sourceName, false);
+        continue;
+      }
+
+      const validation = validateCandidateSample(sourceName, candidate);
+      if (!validation.ok) {
+        state.sourceErrors[sourceName] = validation.reason;
+        markSourceHealth(sourceName, false);
+        console.warn(`[poll#${pollId}] rejected ${sourceName} sample: ${validation.reason}`);
+        continue;
+      }
+
+      recordAcceptedSample(sourceName, candidate, validation.key, validation.updatedAtUnix);
+      state.sourceErrors[sourceName] = null;
+      state.sourceCache[sourceName] = {
+        data: candidate,
+        receivedAtMs: now,
+        updatedAtUnix: candidateTsUnix(candidate)
+      };
+
+      const liveNow = isRecent(candidate, staleSeconds);
+      if (sourceName === 'local' && liveNow) {
+        state.lastLocalSeenAt = now;
+      }
+      markSourceHealth(sourceName, liveNow);
     }
 
-    if (!state.useLocal) {
-      if (!state.lastLocalCheckAt || now - state.lastLocalCheckAt >= cfg.dataSource.localRecheckSeconds * 1000) {
-        state.lastLocalCheckAt = now;
-        if (localIsRecent) {
-          state.useLocal = true;
-          state.lastLocalSeenAt = now;
-          selected = localData;
-          selectedSource = 'EdgeReceiver';
-          selectedLive = true;
-        }
-      }
+    const SOURCE_CACHE_MAX_AGE_MULTIPLIER = 4;
+    const sourceCandidates = [];
 
-      if (!state.useLocal && !selected) {
-        try {
-          const cloudData = await fetchCloudData(cfg);
-          if (cloudData) {
-            const cloudIsRecent = isRecent(cloudData, cfg.cradlepoint.cloudStaleSeconds);
-            selected = cloudData;
-            selectedSource = cloudIsRecent ? 'NetCloud' : 'NetCloud (Stale)';
-            selectedLive = cloudIsRecent;
-              if (!cloudIsRecent) {
-                const cloudAgeSeconds = cloudData?.updatedAtUnix
-                  ? Math.floor(Date.now() / 1000 - cloudData.updatedAtUnix)
-                  : null;
-                console.log(`[stale#${pollId}] NetCloud data age ${cloudAgeSeconds ?? 'unknown'}s > ${cfg.cradlepoint.cloudStaleSeconds}s.`);
-              }
-          }
-        } catch (err) {
-          state.lastError = err && err.message ? err.message : String(err);
-        }
-      }
+    for (const sourceName of sourceNames) {
+      const cacheEntry = state.sourceCache[sourceName];
+      const tsUnix = candidateTsUnix(cacheEntry?.data);
+      if (!cacheEntry || !Number.isFinite(tsUnix)) continue;
 
-      if (!state.useLocal && (!selected || !selectedLive)) {
-        try {
-          const intellishiftData = await fetchIntellishiftLocation(cfg);
-          if (intellishiftData) {
-            const staleSeconds = cfg.dataSource?.intellishift?.staleSeconds ?? 300;
-            const isFresh = isRecent(intellishiftData, staleSeconds);
-            selected = intellishiftData;
-            selectedSource = isFresh ? 'Intellishift' : 'Intellishift (Stale)';
-            selectedLive = isFresh;
-              if (!isFresh) {
-                const intelliAgeSeconds = intellishiftData?.updatedAtUnix
-                  ? Math.floor(Date.now() / 1000 - intellishiftData.updatedAtUnix)
-                  : null;
-                console.log(`[stale#${pollId}] Intellishift data age ${intelliAgeSeconds ?? 'unknown'}s > ${staleSeconds}s.`);
-              }
-          }
-        } catch (err) {
-          state.lastError = err && err.message ? err.message : String(err);
-          if (String(err).includes('HTTP 401') || String(err).includes('token')) {
-            clearIntellishiftToken('Intellishift authorization required');
-            sendIntellishiftTokenStatus();
-          }
-        }
+      const staleSeconds = getSourceStaleSeconds(sourceName, cfg);
+      const ageSeconds = Math.max(0, Math.floor(now / 1000 - tsUnix));
+      const isLive = ageSeconds <= staleSeconds;
+      const maxCacheAgeSeconds = staleSeconds * SOURCE_CACHE_MAX_AGE_MULTIPLIER;
+      if (ageSeconds > maxCacheAgeSeconds) continue;
+
+      sourceCandidates.push({
+        sourceName,
+        data: cacheEntry.data,
+        updatedAtUnix: tsUnix,
+        ageSeconds,
+        isLive
+      });
+    }
+
+    const liveCandidates = sourceCandidates.filter((entry) => entry.isLive);
+    const staleCandidates = sourceCandidates.filter((entry) => !entry.isLive);
+
+    let winner = chooseNewestCandidate(liveCandidates) || chooseNewestCandidate(staleCandidates);
+
+    const previousRemote = String(state.lastSource || '').startsWith('NetCloud')
+      ? 'cloud'
+      : (String(state.lastSource || '').startsWith('Intellishift') ? 'intellishift' : null);
+    const cloudLive = liveCandidates.find((entry) => entry.sourceName === 'cloud') || null;
+
+    const REMOTE_CLOUD_STICKY_DELTA_SECONDS = 90;
+    if (winner && previousRemote === 'cloud' && winner.sourceName === 'intellishift' && cloudLive) {
+      const winnerTs = winner.updatedAtUnix;
+      const cloudTs = cloudLive.updatedAtUnix;
+      if (!Number.isFinite(winnerTs) || !Number.isFinite(cloudTs) || winnerTs < cloudTs + REMOTE_CLOUD_STICKY_DELTA_SECONDS) {
+        winner = cloudLive;
       }
     }
-  }
 
-  if (!selected && localData) {
-    selected = localData;
-    selectedSource = 'EdgeReceiver (Stale)';
-    selectedLive = false;
-    console.log(`[stale#${pollId}] Falling back to local stale data.`);
-  }
+    if (winner) {
+      tryAcceptCandidate(winner.sourceName, winner.data, sourceLabelFor(winner.sourceName, winner.isLive), winner.isLive);
+      state.useLocal = winner.sourceName === 'local' && winner.isLive;
+    }
 
-  state.lastError = localError || state.lastError;
-  if (selected) {
-    updateMovementState(prevData, selected);
-    state.lastData = selected;
-    state.lastSource = selectedSource;
-    state.isLive = selectedLive;
-    console.log(`[poll#${pollId}] selected=${selectedSource} live=${selectedLive}`);
-  } else {
-    state.isLive = false;
-    console.log(`[poll#${pollId}] selected=none live=false`);
-  }
+    if (selected) {
+      updateMovementState(prevData, selected);
+      state.lastData = selected;
+      state.lastSource = selectedSource;
+      state.isLive = selectedLive;
+      state.lastError = null;
+      if (selectedSource.startsWith('NetCloud')) state.activeRemoteProvider = 'cloud';
+      else if (selectedSource.startsWith('Intellishift')) state.activeRemoteProvider = 'intellishift';
+      console.log(`[poll#${pollId}] selected=${selectedSource} live=${selectedLive}`);
+    } else {
+      state.lastData = null;
+      state.lastSource = 'Offline';
+      state.useLocal = false;
+      state.isLive = false;
+      const errors = [state.sourceErrors.local, state.sourceErrors.cloud, state.sourceErrors.intellishift].filter(Boolean);
+      state.lastError = errors.length ? errors.join(' | ') : 'No usable location data';
+      console.log(`[poll#${pollId}] selected=none live=false`);
+    }
 
     sendStatus();
     return;

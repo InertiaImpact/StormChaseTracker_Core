@@ -109,6 +109,7 @@ main {
   gap: 20px;
   padding: 20px 24px 28px;
   min-height: calc(100vh - 80px);
+  overflow: hidden;
 }
 
 .panel {
@@ -119,11 +120,18 @@ main {
   display: flex;
   flex-direction: column;
   position: relative;
+  min-height: 0;
 }
 
 .panel h2 {
   margin: 0 0 14px 0;
   font-size: 18px;
+}
+
+#configPanel {
+  max-height: calc(100vh - 120px);
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .panel-header {
@@ -149,8 +157,10 @@ main {
 }
 
 .map {
-  flex: 1 1 auto;
-  min-height: 360px;
+  flex: 0 0 auto;
+  height: clamp(260px, 52vh, 680px);
+  min-height: 220px;
+  max-height: calc(100vh - 280px);
   border-radius: 10px;
   overflow: hidden;
   position: relative;
@@ -650,5 +660,16 @@ body.map-fullscreen .map {
 @media (max-width: 1100px) {
   main {
     grid-template-columns: 1fr;
+    overflow: visible;
+  }
+
+  #configPanel {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .map {
+    height: clamp(240px, 45vh, 520px);
+    max-height: none;
   }
 }

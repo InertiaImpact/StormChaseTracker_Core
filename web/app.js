@@ -10,6 +10,9 @@ let pollTimer = null;
 let pollIntervalSeconds = 5;
 let pollCountdownTimer = null;
 let nextPollAt = null;
+let lastCoreStatusPill = null;
+let lastCoreStatusAtMs = 0;
+const CORE_STATUS_PILL_GRACE_MS = 30000;
 const ROAD_WARRIOR_ICON_WIDTH = 60;
 let roadWarriorIconSize = { width: ROAD_WARRIOR_ICON_WIDTH, height: ROAD_WARRIOR_ICON_WIDTH };
 
@@ -193,8 +196,17 @@ function formatTime(unixSeconds) {
   return new Date(unixSeconds * 1000).toLocaleString();
 }
 
-function setPill(status, label) {
+function setPill(status, label, style) {
   els.statusPill.className = `pill ${status}`;
+  if (style && typeof style === 'object') {
+    els.statusPill.style.background = style.background || '';
+    els.statusPill.style.color = style.color || '';
+    els.statusPill.style.borderColor = style.border || '';
+  } else {
+    els.statusPill.style.background = '';
+    els.statusPill.style.color = '';
+    els.statusPill.style.borderColor = '';
+  }
   if (els.statusPillLabel) {
     els.statusPillLabel.textContent = label;
   } else {
@@ -293,13 +305,30 @@ function updateMap(data, status) {
 
 function updateStatus(status) {
   const data = status.data || null;
+  const sourceLabel = String(status.lastSource || '');
   const sourceKey = String(status.lastSource || '').toLowerCase();
 
-  if (data && status.isLive && sourceKey.includes('edge')) setPill('ok', 'Live');
-  else if (data && status.isLive && sourceKey.includes('netcloud')) setPill('warn', 'Live NetCloud');
-  else if (data && status.isLive && sourceKey.includes('intellishift')) setPill('warn', 'Live Intellishift');
-  else if (data && !status.isLive) setPill('warn', 'Stale');
-  else setPill('offline', 'Offline');
+  if (status?.statusPill?.className && status?.statusPill?.label) {
+    lastCoreStatusPill = status.statusPill;
+    lastCoreStatusAtMs = Date.now();
+    setPill(status.statusPill.className, status.statusPill.label, status.statusPill.style);
+  } else {
+    const forcedMatch = sourceLabel.match(/^Forced\s+(local|cloud|intellishift|offline)/i);
+    if (forcedMatch) {
+      const forcedRaw = forcedMatch[1].toLowerCase();
+      const forcedLabel = forcedRaw === 'local'
+        ? 'Edge'
+        : (forcedRaw === 'cloud' ? 'NetCloud' : (forcedRaw === 'intellishift' ? 'Intellishift' : 'Offline'));
+      if (forcedRaw === 'local') setPill('ok', `Forced ${forcedLabel}`);
+      else if (forcedRaw === 'cloud') setPill('warn', `Forced ${forcedLabel}`);
+      else if (forcedRaw === 'intellishift') setPill('warn', `Forced ${forcedLabel}`);
+      else setPill('offline', `Forced ${forcedLabel}`);
+    } else if (data && status.isLive && sourceKey.includes('edge')) setPill('ok', 'Live');
+    else if (data && status.isLive && sourceKey.includes('netcloud')) setPill('warn', 'Live NetCloud');
+    else if (data && status.isLive && sourceKey.includes('intellishift')) setPill('warn', 'Live Intellishift');
+    else if (data && !status.isLive) setPill('warn', 'Stale');
+    else setPill('offline', 'Offline');
+  }
 
   if (els.mapOverlayLocation) {
     const direction = headingTextFromDeg(data?.headingDeg);
@@ -329,7 +358,11 @@ async function poll() {
     const data = await res.json();
     updateStatus(data);
   } catch {
-    setPill('offline', 'Offline');
+    if (lastCoreStatusPill && (Date.now() - lastCoreStatusAtMs) <= CORE_STATUS_PILL_GRACE_MS) {
+      setPill('warn', `${lastCoreStatusPill.label} (Core Link Lost)`);
+    } else {
+      setPill('offline', 'Offline');
+    }
   } finally {
     setNextPollCountdown(pollIntervalSeconds);
   }

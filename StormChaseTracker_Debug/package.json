@@ -1,7 +1,7 @@
 {
-  "name": "roadwarrior-map-v2",
-  "version": "0.2.1",
-  "description": "RoadWarrior map viewer with local-first GPS and cloud fallback",
+  "name": "stormchasetracker-debug",
+  "version": "0.1.1",
+  "description": "StormChaseTracker GPS source debug utility",
   "main": "main.js",
   "private": true,
   "scripts": {
@@ -19,9 +19,8 @@
     "tar": "^7.5.7"
   },
   "build": {
-    "appId": "com.sbg.stormchasetracker.core",
-    "productName": "StormChaseTracker Core",
-    "icon": "assets/RoadWarrior_Core.ico",
+    "appId": "com.sbg.stormchasetracker.debug",
+    "productName": "StormChaseTracker Debug",
     "asar": true,
     "files": [
       "**/*",
@@ -35,8 +34,7 @@
     "win": {
       "target": [
         "nsis"
-      ],
-      "icon": "assets/RoadWarrior_Core.ico"
+      ]
     }
   }
 }

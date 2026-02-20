@@ -1,0 +1,89 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline';" />
+  <title>StormChaseTracker Debug</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <h1>StormChaseTracker GPS Debug</h1>
+    <div id="statusPill" class="pill idle">Idle</div>
+  </header>
+
+  <section class="panel">
+    <h2>GPS Source</h2>
+    <div class="grid">
+      <label>Enabled
+        <select id="nmeaEnabled">
+          <option value="true">Yes</option>
+          <option value="false">No</option>
+        </select>
+      </label>
+      <label>Source Type
+        <select id="nmeaProtocol">
+          <option value="udp">UDP</option>
+          <option value="tcp">TCP</option>
+          <option value="dummy-route">Dummy Route</option>
+          <option value="dummy-static">Dummy Static</option>
+        </select>
+      </label>
+      <label>Host (optional for UDP)
+        <input id="nmeaHost" type="text" placeholder="10.0.2.1" />
+      </label>
+      <label>Port
+        <input id="nmeaPort" type="number" min="1" max="65535" />
+      </label>
+      <label>Dummy Base Lat
+        <input id="dummyBaseLat" type="number" step="0.000001" />
+      </label>
+      <label>Dummy Base Lon
+        <input id="dummyBaseLon" type="number" step="0.000001" />
+      </label>
+    </div>
+    <div class="actions">
+      <button id="saveBtn" class="primary">Save</button>
+      <button id="startBtn">Start Listening</button>
+      <button id="stopBtn" class="secondary">Stop</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Connection Status</h2>
+    <div class="grid stats">
+      <div class="stat"><span>Connected</span><strong id="nmeaConnected">No</strong></div>
+      <div class="stat"><span>Bind Address</span><strong id="nmeaBindAddress">-</strong></div>
+      <div class="stat"><span>Bind Error</span><strong id="nmeaBindError">-</strong></div>
+      <div class="stat"><span>Last Source</span><strong id="lastNmeaSource">-</strong></div>
+      <div class="stat"><span>Last Packet At</span><strong id="lastNmeaAt">-</strong></div>
+      <div class="stat"><span>Packet Count</span><strong id="nmeaPackets">0</strong></div>
+      <div class="stat"><span>Last Bytes</span><strong id="lastNmeaBytes">0</strong></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Decoded GPS</h2>
+    <div class="grid stats">
+      <div class="stat"><span>Fix</span><strong id="fixValid">NO-FIX</strong></div>
+      <div class="stat"><span>UTC</span><strong id="utcTime">-</strong></div>
+      <div class="stat"><span>Date</span><strong id="date">-</strong></div>
+      <div class="stat"><span>Latitude</span><strong id="lat">-</strong></div>
+      <div class="stat"><span>Longitude</span><strong id="lon">-</strong></div>
+      <div class="stat"><span>Speed (kn)</span><strong id="speedKn">-</strong></div>
+      <div class="stat"><span>Speed (mph)</span><strong id="speedMph">-</strong></div>
+      <div class="stat"><span>Course (°T)</span><strong id="courseT">-</strong></div>
+      <div class="stat"><span>Satellites</span><strong id="sats">-</strong></div>
+      <div class="stat"><span>HDOP</span><strong id="hdop">-</strong></div>
+      <div class="stat"><span>Altitude (m)</span><strong id="altM">-</strong></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Last NMEA Sentence</h2>
+    <pre id="lastNmeaLine">-</pre>
+  </section>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

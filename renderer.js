@@ -260,8 +260,17 @@ function formatTime(unixSeconds) {
   return date.toLocaleString();
 }
 
-function setPill(status, label) {
+function setPill(status, label, style) {
   els.statusPill.className = `pill ${status}`;
+  if (style && typeof style === 'object') {
+    els.statusPill.style.background = style.background || '';
+    els.statusPill.style.color = style.color || '';
+    els.statusPill.style.borderColor = style.border || '';
+  } else {
+    els.statusPill.style.background = '';
+    els.statusPill.style.color = '';
+    els.statusPill.style.borderColor = '';
+  }
   if (els.statusPillLabel) {
     els.statusPillLabel.textContent = label;
   } else {
@@ -369,6 +378,13 @@ function setMapFullscreen(enable) {
   if (els.mapFullscreenBtn) {
     els.mapFullscreenBtn.textContent = mapFullscreen ? 'Exit Fullscreen' : 'Fullscreen Map';
   }
+}
+
+function refreshMapLayout() {
+  if (!map) return;
+  setTimeout(() => {
+    if (map) map.invalidateSize();
+  }, 50);
 }
 
 function applyConfig(cfg) {
@@ -592,11 +608,25 @@ function updateStatus(status) {
   }
   els.lastError.textContent = status.lastError || '-';
 
-  if (data && status.isLive && sourceKey.includes('edge')) setPill('edge', 'Edge');
-  else if (data && status.isLive && sourceKey.includes('netcloud')) setPill('netcloud', 'NetCloud');
-  else if (data && status.isLive && sourceKey.includes('intellishift')) setPill('intellishift', 'Intellishift');
-  else if (data && !status.isLive) setPill('stale', 'Stale');
-  else setPill('offline', 'Offline');
+  if (status?.statusPill?.className && status?.statusPill?.label) {
+    setPill(status.statusPill.className, status.statusPill.label, status.statusPill.style);
+  } else {
+    const forcedMatch = sourceLabel.match(/^Forced\s+(local|cloud|intellishift|offline)/i);
+    if (forcedMatch) {
+      const forcedRaw = forcedMatch[1].toLowerCase();
+      const forcedLabel = forcedRaw === 'local'
+        ? 'Edge'
+        : (forcedRaw === 'cloud' ? 'NetCloud' : (forcedRaw === 'intellishift' ? 'Intellishift' : 'Offline'));
+      if (forcedRaw === 'local') setPill('edge', `Forced ${forcedLabel}`);
+      else if (forcedRaw === 'cloud') setPill('netcloud', `Forced ${forcedLabel}`);
+      else if (forcedRaw === 'intellishift') setPill('intellishift', `Forced ${forcedLabel}`);
+      else setPill('offline', `Forced ${forcedLabel}`);
+    } else if (data && status.isLive && sourceKey.includes('edge')) setPill('edge', 'Edge');
+    else if (data && status.isLive && sourceKey.includes('netcloud')) setPill('netcloud', 'NetCloud');
+    else if (data && status.isLive && sourceKey.includes('intellishift')) setPill('intellishift', 'Intellishift');
+    else if (data && !status.isLive) setPill('stale', 'Stale');
+    else setPill('offline', 'Offline');
+  }
 
   const nextSeconds = Number.isFinite(status?.nextPollInSeconds)
     ? status.nextPollInSeconds
@@ -764,6 +794,8 @@ if (els.testingForceSource) {
 els.mapFullscreenBtn.addEventListener('click', () => {
   setMapFullscreen(!mapFullscreen);
 });
+
+window.addEventListener('resize', refreshMapLayout);
 
 window.api.onStatus(updateStatus);
 window.api.onToggleConfig(setConfigVisible);
