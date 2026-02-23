@@ -1,7 +1,5 @@
 const els = {
   statusPill: document.getElementById('status-pill'),
-  statusPillLabel: document.getElementById('statusPillLabel'),
-  statusPollTimer: document.getElementById('statusPollTimer'),
   source: document.getElementById('source'),
   updated: document.getElementById('updated'),
   age: document.getElementById('age'),
@@ -19,7 +17,6 @@ const els = {
   localRecheckSeconds: document.getElementById('localRecheckSeconds'),
   updateIntervalSeconds: document.getElementById('updateIntervalSeconds'),
   webPollIntervalSeconds: document.getElementById('webPollIntervalSeconds'),
-  idlePollIntervalSeconds: document.getElementById('idlePollIntervalSeconds'),
   cloudEnabled: document.getElementById('cloudEnabled'),
   cloudStaleSeconds: document.getElementById('cloudStaleSeconds'),
   cloudUrl: document.getElementById('cloudUrl'),
@@ -50,7 +47,6 @@ const els = {
   authSaveBtn: document.getElementById('authSaveBtn'),
   saveBanner: document.getElementById('saveBanner'),
   saveBtn: document.getElementById('saveBtn'),
-  pollNowBtn: document.getElementById('pollNowBtn'),
   localStatus: document.getElementById('localStatus'),
   lastError: document.getElementById('lastError'),
   configPanel: document.getElementById('configPanel'),
@@ -58,8 +54,7 @@ const els = {
 };
 
 let map = null;
-let baseMarker = null;
-let headingMarker = null;
+let marker = null;
 let mapFullscreen = false;
 let baseLayers = null;
 let activeBaseLayer = null;
@@ -70,24 +65,7 @@ let lastPosition = null;
 let styleSelect = null;
 let currentConfig = null;
 let intellishiftVehiclesLoaded = false;
-let intellishiftVehicleMap = new Map();
 let isDirty = false;
-let isSaving = false;
-let pollCountdownTimer = null;
-let nextPollAt = null;
-let lastMapData = null;
-let lastMapStatus = null;
-const ROAD_WARRIOR_ICON_WIDTH = 60;
-let roadWarriorIconSize = { width: ROAD_WARRIOR_ICON_WIDTH, height: ROAD_WARRIOR_ICON_WIDTH };
-const roadWarriorImage = new Image();
-roadWarriorImage.onload = () => {
-  const w = roadWarriorImage.naturalWidth || ROAD_WARRIOR_ICON_WIDTH;
-  const h = roadWarriorImage.naturalHeight || ROAD_WARRIOR_ICON_WIDTH;
-  const scaledHeight = Math.max(1, Math.round((ROAD_WARRIOR_ICON_WIDTH * h) / w));
-  roadWarriorIconSize = { width: ROAD_WARRIOR_ICON_WIDTH, height: scaledHeight };
-  if (baseMarker) baseMarker.setIcon(createRoadWarriorIcon());
-};
-roadWarriorImage.src = './assets/RoadWarrior.png';
 
 function setDirty(dirty) {
   isDirty = dirty;
@@ -159,9 +137,6 @@ function initMap() {
       followZoomValue = zoom;
       if (els.followZoom) els.followZoom.value = String(zoom);
     }
-    if (lastMapData && lastMapStatus) {
-      updateMap(lastMapData, lastMapStatus);
-    }
   });
 }
 
@@ -175,131 +150,15 @@ function createHeadingIcon(deg) {
   });
 }
 
-function isStationary(data) {
-  return typeof data?.speedMph === 'number' && data.speedMph < 1;
-}
-
-function getHeadingOffsetLatLng(lat, lon, headingDeg, pixels = 22) {
-  if (typeof lat !== 'number' || typeof lon !== 'number') return [lat, lon];
-  if (!map) return [lat, lon];
-  const zoom = map.getZoom();
-  const point = map.project([lat, lon], zoom);
-  const rad = (typeof headingDeg === 'number' ? headingDeg : 0) * Math.PI / 180;
-  const dx = Math.sin(rad) * pixels;
-  const dy = -Math.cos(rad) * pixels;
-  const nextPoint = L.point(point.x + dx, point.y + dy);
-  const nextLatLng = map.unproject(nextPoint, zoom);
-  return [nextLatLng.lat, nextLatLng.lng];
-}
-
-function createRoadWarriorIcon() {
-  const width = roadWarriorIconSize.width || ROAD_WARRIOR_ICON_WIDTH;
-  const height = roadWarriorIconSize.height || ROAD_WARRIOR_ICON_WIDTH;
-  return L.icon({
-    iconUrl: './assets/RoadWarrior.png',
-    iconSize: [width, height],
-    iconAnchor: [Math.round(width / 2), Math.round(height / 2)]
-  });
-}
-
-function createUnitCircleIcon(label) {
-  const safeLabel = label ? String(label) : '';
-  return L.divIcon({
-    className: 'unit-marker',
-    html: `<div class="unit-marker__circle">${safeLabel}</div>`,
-    iconSize: [34, 34],
-    iconAnchor: [17, 17]
-  });
-}
-
-function getSelectedIntellishiftVehicle() {
-  const vehicleId = currentConfig?.dataSource?.intellishift?.vehicleId;
-  const name = vehicleId ? intellishiftVehicleMap.get(String(vehicleId)) : null;
-  return { id: vehicleId ? String(vehicleId) : null, name };
-}
-
-function isRoadWarriorSelected() {
-  const { name } = getSelectedIntellishiftVehicle();
-  return !!(name && /road\s*warrior/i.test(name));
-}
-
-function getUnitLabel() {
-  const { id, name } = getSelectedIntellishiftVehicle();
-  if (name) {
-    const match = name.match(/(\d+)/);
-    if (match) return match[1];
-    return name.length > 6 ? name.slice(0, 6) : name;
-  }
-  return id || '';
-}
-
-function getBaseMarkerIcon(status) {
-  const sourceKey = String(status?.lastSource || '').toLowerCase();
-  if (sourceKey.includes('intellishift')) {
-    return isRoadWarriorSelected()
-      ? createRoadWarriorIcon()
-      : createUnitCircleIcon(getUnitLabel());
-  }
-  if (sourceKey.includes('netcloud') || sourceKey.includes('edge')) {
-    return createRoadWarriorIcon();
-  }
-  return createRoadWarriorIcon();
-}
-
-function getHeadingOffsetPixels(status) {
-  const sourceKey = String(status?.lastSource || '').toLowerCase();
-  if (sourceKey.includes('intellishift') && !isRoadWarriorSelected()) {
-    return 32;
-  }
-  return 34;
-}
-
 function formatTime(unixSeconds) {
   if (!unixSeconds) return '-';
   const date = new Date(unixSeconds * 1000);
   return date.toLocaleString();
 }
 
-function setPill(status, label, style) {
+function setPill(status, label) {
   els.statusPill.className = `pill ${status}`;
-  if (style && typeof style === 'object') {
-    els.statusPill.style.background = style.background || '';
-    els.statusPill.style.color = style.color || '';
-    els.statusPill.style.borderColor = style.border || '';
-  } else {
-    els.statusPill.style.background = '';
-    els.statusPill.style.color = '';
-    els.statusPill.style.borderColor = '';
-  }
-  if (els.statusPillLabel) {
-    els.statusPillLabel.textContent = label;
-  } else {
-    els.statusPill.textContent = label;
-  }
-}
-
-function updatePollCountdown() {
-  if (!els.statusPollTimer) return;
-  if (!nextPollAt) {
-    els.statusPollTimer.textContent = '--';
-    return;
-  }
-  const remaining = Math.max(0, Math.ceil((nextPollAt - Date.now()) / 1000));
-  els.statusPollTimer.textContent = `${remaining}s`;
-}
-
-function setNextPollCountdown(seconds) {
-  if (!els.statusPollTimer) return;
-  if (!Number.isFinite(seconds)) {
-    nextPollAt = null;
-    updatePollCountdown();
-    return;
-  }
-  nextPollAt = Date.now() + Math.max(0, seconds) * 1000;
-  updatePollCountdown();
-  if (!pollCountdownTimer) {
-    pollCountdownTimer = setInterval(updatePollCountdown, 1000);
-  }
+  els.statusPill.textContent = label;
 }
 
 
@@ -322,7 +181,7 @@ function formatHeadingDirection(deg) {
   return directions[idx] || '-';
 }
 
-function updateMap(data, status) {
+function updateMap(data) {
   if (!data) return;
   const lat = data.latitude;
   const lon = data.longitude;
@@ -330,33 +189,14 @@ function updateMap(data, status) {
 
   if (!map) initMap();
 
-  lastMapData = data;
-  lastMapStatus = status;
-
   lastPosition = [lat, lon];
 
-  const baseIcon = getBaseMarkerIcon(status);
-  if (!baseMarker) {
-    baseMarker = L.marker([lat, lon], { icon: baseIcon, interactive: false }).addTo(map);
+  if (!marker) {
+    marker = L.marker([lat, lon], { icon: createHeadingIcon(data.headingDeg) }).addTo(map);
     map.setView([lat, lon], followZoomValue, { animate: true, duration: 0.6 });
   } else {
-    baseMarker.setLatLng([lat, lon]);
-    baseMarker.setIcon(baseIcon);
-  }
-
-  const headingValid = typeof data.headingDeg === 'number' && !Number.isNaN(data.headingDeg);
-  const showHeading = headingValid && !isStationary(data);
-  if (showHeading) {
-    const headingPos = getHeadingOffsetLatLng(lat, lon, data.headingDeg, getHeadingOffsetPixels(status));
-    if (!headingMarker) {
-      headingMarker = L.marker(headingPos, { icon: createHeadingIcon(data.headingDeg), interactive: false }).addTo(map);
-    } else {
-      headingMarker.setLatLng(headingPos);
-      headingMarker.setIcon(createHeadingIcon(data.headingDeg));
-      if (!map.hasLayer(headingMarker)) headingMarker.addTo(map);
-    }
-  } else if (headingMarker && map.hasLayer(headingMarker)) {
-    map.removeLayer(headingMarker);
+    marker.setLatLng([lat, lon]);
+    marker.setIcon(createHeadingIcon(data.headingDeg));
   }
 
   if (followEnabled) {
@@ -380,13 +220,6 @@ function setMapFullscreen(enable) {
   }
 }
 
-function refreshMapLayout() {
-  if (!map) return;
-  setTimeout(() => {
-    if (map) map.invalidateSize();
-  }, 50);
-}
-
 function applyConfig(cfg) {
   currentConfig = cfg;
   const dataSource = cfg.dataSource || {};
@@ -401,9 +234,6 @@ function applyConfig(cfg) {
   els.updateIntervalSeconds.value = cfg.updateIntervalSeconds ?? 5;
   if (els.webPollIntervalSeconds) {
     els.webPollIntervalSeconds.value = cfg.webPollIntervalSeconds ?? 5;
-  }
-  if (els.idlePollIntervalSeconds) {
-    els.idlePollIntervalSeconds.value = cfg.idlePollIntervalSeconds ?? 120;
   }
 
   if (els.cloudEnabled) {
@@ -451,7 +281,6 @@ function getFormConfig() {
   return {
     updateIntervalSeconds: Number(els.updateIntervalSeconds.value || 5),
     webPollIntervalSeconds: Number(els.webPollIntervalSeconds?.value || 5),
-    idlePollIntervalSeconds: Number(els.idlePollIntervalSeconds?.value || 120),
     dataSource: {
       localDataUrl: els.localDataUrl.value.trim(),
       localFailoverSeconds: Number(els.localFailoverSeconds.value || 30),
@@ -527,7 +356,6 @@ function updateIntellishiftTokenStatus(status) {
 function populateIntellishiftVehicles(vehicles, selectedId) {
   if (!els.intellishiftVehicleId) return;
   const current = selectedId ?? els.intellishiftVehicleId.value;
-  intellishiftVehicleMap = new Map(vehicles.map((vehicle) => [String(vehicle.id), vehicle.name]));
   els.intellishiftVehicleId.innerHTML = '';
 
   const placeholder = document.createElement('option');
@@ -608,45 +436,20 @@ function updateStatus(status) {
   }
   els.lastError.textContent = status.lastError || '-';
 
-  if (status?.statusPill?.className && status?.statusPill?.label) {
-    setPill(status.statusPill.className, status.statusPill.label, status.statusPill.style);
-  } else {
-    const forcedMatch = sourceLabel.match(/^Forced\s+(local|cloud|intellishift|offline)/i);
-    if (forcedMatch) {
-      const forcedRaw = forcedMatch[1].toLowerCase();
-      const forcedLabel = forcedRaw === 'local'
-        ? 'Edge'
-        : (forcedRaw === 'cloud' ? 'NetCloud' : (forcedRaw === 'intellishift' ? 'Intellishift' : 'Offline'));
-      if (forcedRaw === 'local') setPill('edge', `Forced ${forcedLabel}`);
-      else if (forcedRaw === 'cloud') setPill('netcloud', `Forced ${forcedLabel}`);
-      else if (forcedRaw === 'intellishift') setPill('intellishift', `Forced ${forcedLabel}`);
-      else setPill('offline', `Forced ${forcedLabel}`);
-    } else if (data && status.isLive && sourceKey.includes('edge')) setPill('edge', 'Edge');
-    else if (data && status.isLive && sourceKey.includes('netcloud')) setPill('netcloud', 'NetCloud');
-    else if (data && status.isLive && sourceKey.includes('intellishift')) setPill('intellishift', 'Intellishift');
-    else if (data && !status.isLive) setPill('stale', 'Stale');
-    else setPill('offline', 'Offline');
-  }
-
-  const nextSeconds = Number.isFinite(status?.nextPollInSeconds)
-    ? status.nextPollInSeconds
-    : (Number.isFinite(status?.pollIntervalSeconds) ? status.pollIntervalSeconds : null);
-  setNextPollCountdown(nextSeconds);
+  if (data && status.isLive && sourceKey.includes('edge')) setPill('edge', 'Edge');
+  else if (data && status.isLive && sourceKey.includes('netcloud')) setPill('netcloud', 'NetCloud');
+  else if (data && status.isLive && sourceKey.includes('intellishift')) setPill('intellishift', 'Intellishift');
+  else if (data && !status.isLive) setPill('stale', 'Stale');
+  else setPill('offline', 'Offline');
 
 
-  updateMap(data, status);
+  updateMap(data);
 }
 
 async function saveConfigFromForm() {
-  isSaving = true;
-  try {
-    const saved = await window.api.setConfig(getFormConfig());
-    applyConfig(saved);
-    setDirty(false);
-    return saved;
-  } finally {
-    isSaving = false;
-  }
+  const saved = await window.api.setConfig(getFormConfig());
+  applyConfig(saved);
+  return saved;
 }
 
 window.api.getConfig().then((cfg) => {
@@ -677,14 +480,8 @@ visibilityButtons.forEach((btn) => {
 
 const configInputs = Array.from(document.querySelectorAll('#configPanel input, #configPanel select, #configPanel textarea'));
 configInputs.forEach((el) => {
-  el.addEventListener('input', () => {
-    if (isSaving) return;
-    setDirty(true);
-  });
-  el.addEventListener('change', () => {
-    if (isSaving) return;
-    setDirty(true);
-  });
+  el.addEventListener('input', () => setDirty(true));
+  el.addEventListener('change', () => setDirty(true));
 });
 
 if (els.saveBanner) {
@@ -773,12 +570,6 @@ els.saveBtn.addEventListener('click', async () => {
   await saveConfigFromForm();
 });
 
-if (els.pollNowBtn) {
-  els.pollNowBtn.addEventListener('click', async () => {
-    await window.api.pollNow();
-  });
-}
-
 if (els.cloudEnabled) {
   els.cloudEnabled.addEventListener('change', saveConfigFromForm);
 }
@@ -794,8 +585,6 @@ if (els.testingForceSource) {
 els.mapFullscreenBtn.addEventListener('click', () => {
   setMapFullscreen(!mapFullscreen);
 });
-
-window.addEventListener('resize', refreshMapLayout);
 
 window.api.onStatus(updateStatus);
 window.api.onToggleConfig(setConfigVisible);

@@ -14,10 +14,7 @@
       <p>Local-first GPS with NetCloud fallback</p>
     </div>
     <div class="status-stack">
-      <div id="status-pill" class="pill idle">
-        <span class="pill-label" id="statusPillLabel">Idle</span>
-        <span class="pill-timer" id="statusPollTimer">--</span>
-      </div>
+      <div id="status-pill" class="pill idle">Idle</div>
     </div>
   </header>
 
@@ -67,19 +64,6 @@
     <section class="panel" id="configPanel">
       <h2>Configuration</h2>
       
-      <!-- ========== GENERAL CONFIG ========== -->
-      <div class="config-section">
-        <h3>General Config</h3>
-        <div class="grid">
-          <label>No-Movement Poll Interval (s)
-            <input id="idlePollIntervalSeconds" type="number" />
-          </label>
-          <label>Manual Poll
-            <button id="pollNowBtn" type="button">Poll Now</button>
-          </label>
-        </div>
-      </div>
-
       <!-- ========== DATA SOURCE CONFIG ========== -->
       <div class="config-section">
         <h3>Data Source Config</h3>
@@ -92,12 +76,6 @@
           </label>
           <label>Edge Recheck Seconds
             <input id="localRecheckSeconds" type="number" />
-          </label>
-          <label>Update Interval (s)
-            <input id="updateIntervalSeconds" type="number" />
-          </label>
-          <label>Web Poll Interval (s)
-            <input id="webPollIntervalSeconds" type="number" />
           </label>
         </div>
       </div>
@@ -197,13 +175,6 @@
       <!-- ========== XPRESSION CONNECTOR ========== -->
       <div class="config-section">
         <h3>Xpression Connector</h3>
-        <div class="info-banner">
-          Not needed if the datalink server can reach the API endpoints listed below.:
-          <ul>
-            <li><strong>GET</strong> /api/status</li>
-            <li><strong>GET</strong> /api/xpression</li>
-          </ul>
-        </div>
         <div class="grid">
           <label class="toggle-label">Enabled
             <div class="toggle">
@@ -213,6 +184,19 @@
           </label>
           <label>Output Path
             <input id="xpressionOutputPath" type="text" placeholder="\\KGAN-XPN-MOSGW\Local_KGAN_Locator\" />
+          </label>
+        </div>
+      </div>
+
+      <!-- ========== GENERAL CONFIG ========== -->
+      <div class="config-section">
+        <h3>General Config</h3>
+        <div class="grid">
+          <label>Update Interval Seconds
+            <input id="updateIntervalSeconds" type="number" />
+          </label>
+          <label>Web Poll Interval Seconds
+            <input id="webPollIntervalSeconds" type="number" />
           </label>
         </div>
       </div>
