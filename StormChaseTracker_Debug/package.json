@@ -10,7 +10,7 @@
     "dist": "electron-builder"
   },
   "devDependencies": {
-    "electron": "^31.0.0",
+    "electron": "^35.7.5",
     "electron-builder": "^26.7.0"
   },
   "overrides": {
