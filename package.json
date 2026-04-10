@@ -1,6 +1,6 @@
 {
   "name": "roadwarrior-map-v2",
-  "version": "0.2.1",
+  "version": "0.2.4",
   "description": "RoadWarrior map viewer with local-first GPS and cloud fallback",
   "main": "main.js",
   "private": true,

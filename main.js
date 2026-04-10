@@ -1,7 +1,8 @@
-const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
+const nodeUrl = require('url');
 
 const CONFIG_FILE = 'stormchasetracker-core-config.json';
 const RECEIVER_CONFIG_FILE = 'stormchasetracker-core-receiver-config.json';
@@ -1193,11 +1194,13 @@ function startReceiverServer(currentCfg) {
   };
 
   receiverServer = http.createServer((req, res) => {
-    const base = `http://${req.headers.host || 'localhost'}`;
-    const url = new URL(req.url || '/', base);
-    const reqPath = url.pathname;
-    const ingestPath = currentCfg.ingestPath.startsWith('/') ? currentCfg.ingestPath : `/${currentCfg.ingestPath}`;
-    const ingestAlt = ingestPath.endsWith('/') ? ingestPath.slice(0, -1) : `${ingestPath}/`;
+    try {
+      const requestTarget = typeof req.url === 'string' && req.url.length > 0 ? req.url : '/';
+      const parsed = nodeUrl.parse(requestTarget);
+      const reqPath = typeof parsed.pathname === 'string' && parsed.pathname.length > 0 ? parsed.pathname : '/';
+
+      const ingestPath = currentCfg.ingestPath.startsWith('/') ? currentCfg.ingestPath : `/${currentCfg.ingestPath}`;
+      const ingestAlt = ingestPath.endsWith('/') ? ingestPath.slice(0, -1) : `${ingestPath}/`;
 
     if (req.method === 'GET' && (reqPath === '/' || reqPath === '/index.html')) {
       readWebStatic('index.html', res, 'text/html; charset=utf-8');
@@ -1264,53 +1267,74 @@ function startReceiverServer(currentCfg) {
       return;
     }
 
-    if (req.method === 'POST' && (reqPath === ingestPath || reqPath === ingestAlt)) {
-      let body = '';
-      req.on('data', chunk => { body += chunk; });
-      req.on('end', () => {
-        let payload = null;
-        try { payload = JSON.parse(body); } catch { payload = { raw: body }; }
-        const tsUnix = payload?.ts_unix ?? payload?.tsUnix ?? payload?.timestamp ?? null;
-        const tsUnixNumber = Number.isFinite(tsUnix) ? tsUnix : null;
-        const lastTs = receiverState.lastPayloadTsUnix;
-        const isOutOfOrder = tsUnixNumber != null && Number.isFinite(lastTs) && tsUnixNumber < lastTs;
+      if (req.method === 'POST' && (reqPath === ingestPath || reqPath === ingestAlt)) {
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+          try {
+            let payload = null;
+            try { payload = JSON.parse(body); } catch { payload = { raw: body }; }
+            const tsUnix = payload?.ts_unix ?? payload?.tsUnix ?? payload?.timestamp ?? null;
+            const tsUnixNumber = Number.isFinite(tsUnix) ? tsUnix : null;
+            const lastTs = receiverState.lastPayloadTsUnix;
+            const isOutOfOrder = tsUnixNumber != null && Number.isFinite(lastTs) && tsUnixNumber < lastTs;
 
-        receiverState.lastUpdateAt = Date.now();
-        if (!receiverState.firstUpdateAt) receiverState.firstUpdateAt = receiverState.lastUpdateAt;
-        if (isOutOfOrder) {
-          console.log(`[ingest] ignoring out-of-order payload ts_unix=${tsUnixNumber} < last=${lastTs}`);
-        } else {
-          receiverState.lastPayload = payload;
-          receiverState.lastPayloadTsUnix = tsUnixNumber ?? lastTs ?? null;
-        }
-        receiverState.lastSenderIp = req.socket.remoteAddress;
+            receiverState.lastUpdateAt = Date.now();
+            if (!receiverState.firstUpdateAt) receiverState.firstUpdateAt = receiverState.lastUpdateAt;
+            if (isOutOfOrder) {
+              console.log(`[ingest] ignoring out-of-order payload ts_unix=${tsUnixNumber} < last=${lastTs}`);
+            } else {
+              receiverState.lastPayload = payload;
+              receiverState.lastPayloadTsUnix = tsUnixNumber ?? lastTs ?? null;
+            }
+            receiverState.lastSenderIp = req.socket.remoteAddress;
 
-        try {
-          const ageSeconds = typeof tsUnix === 'number'
-            ? Math.floor(Date.now() / 1000 - tsUnix)
-            : null;
-          console.log(`[ingest] from ${receiverState.lastSenderIp || 'unknown'} ts_unix=${tsUnix ?? 'missing'} age=${ageSeconds ?? 'n/a'}s payload_keys=${payload && typeof payload === 'object' ? Object.keys(payload).join(',') : 'n/a'}`);
-        } catch {
-          console.log('[ingest] received payload (unable to summarize).');
-        }
+            try {
+              const ageSeconds = typeof tsUnix === 'number'
+                ? Math.floor(Date.now() / 1000 - tsUnix)
+                : null;
+              console.log(`[ingest] from ${receiverState.lastSenderIp || 'unknown'} ts_unix=${tsUnix ?? 'missing'} age=${ageSeconds ?? 'n/a'}s payload_keys=${payload && typeof payload === 'object' ? Object.keys(payload).join(',') : 'n/a'}`);
+            } catch {
+              console.log('[ingest] received payload (unable to summarize).');
+            }
 
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ status: 'ok' }));
+          } catch (err) {
+            receiverState.lastSenderIp = req.socket?.remoteAddress || null;
+            console.warn(`[receiver] Failed to process ingest payload from ${receiverState.lastSenderIp || 'unknown'}: ${err?.message || err}`);
+            if (!res.headersSent) {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+            }
+            if (!res.writableEnded) {
+              res.end(JSON.stringify({ error: 'ingest_processing_failed' }));
+            }
+          }
+        });
+        return;
+      }
+
+      if (req.method === 'GET' && (reqPath === '/' || reqPath === '/data')) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'ok' }));
-      });
-      return;
-    }
+        res.end(JSON.stringify({
+          last_update_unix: receiverState.lastUpdateAt ? receiverState.lastUpdateAt / 1000 : null,
+          payload: receiverState.lastPayload
+        }));
+        return;
+      }
 
-    if (req.method === 'GET' && (reqPath === '/' || reqPath === '/data')) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        last_update_unix: receiverState.lastUpdateAt ? receiverState.lastUpdateAt / 1000 : null,
-        payload: receiverState.lastPayload
-      }));
-      return;
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'not_found' }));
+    } catch (err) {
+      receiverState.lastSenderIp = req.socket?.remoteAddress || null;
+      console.warn(`[receiver] Request handling failure for ${req?.method || 'UNKNOWN'} ${req?.url || '/'} from ${receiverState.lastSenderIp || 'unknown'}: ${err?.message || err}`);
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+      }
+      if (!res.writableEnded) {
+        res.end(JSON.stringify({ error: 'internal_error' }));
+      }
     }
-
-    res.writeHead(404, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'not_found' }));
   });
 
   receiverServer.on('error', (err) => {
@@ -1602,7 +1626,24 @@ function startPolling() {
   schedulePolling(getDesiredPollIntervalSeconds());
 }
 
+function setupOpenStreetMapHeaders() {
+  session.defaultSession.webRequest.onBeforeSendHeaders(
+    { urls: ['https://tile.openstreetmap.org/*', 'https://*.tile.openstreetmap.org/*'] },
+    (details, callback) => {
+      const requestHeaders = details.requestHeaders || {};
+      if (!requestHeaders.Referer && !requestHeaders.referer) {
+        requestHeaders.Referer = 'https://www.openstreetmap.org/';
+      }
+      if (!requestHeaders['User-Agent'] && !requestHeaders['user-agent']) {
+        requestHeaders['User-Agent'] = `StormChaseTracker-Core/${app.getVersion()}`;
+      }
+      callback({ requestHeaders });
+    }
+  );
+}
+
 app.whenReady().then(() => {
+  setupOpenStreetMapHeaders();
   migrateLegacyConfigFiles();
   cfg = loadConfig();
   receiverCfg = loadReceiverConfig();

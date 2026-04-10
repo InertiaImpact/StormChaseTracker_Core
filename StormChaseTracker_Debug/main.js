@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const dgram = require('dgram');
@@ -372,7 +372,24 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, 'index.html'));
 }
 
+function setupOpenStreetMapHeaders() {
+  session.defaultSession.webRequest.onBeforeSendHeaders(
+    { urls: ['https://tile.openstreetmap.org/*', 'https://*.tile.openstreetmap.org/*'] },
+    (details, callback) => {
+      const requestHeaders = details.requestHeaders || {};
+      if (!requestHeaders.Referer && !requestHeaders.referer) {
+        requestHeaders.Referer = 'https://www.openstreetmap.org/';
+      }
+      if (!requestHeaders['User-Agent'] && !requestHeaders['user-agent']) {
+        requestHeaders['User-Agent'] = `StormChaseTracker-Debug/${app.getVersion()}`;
+      }
+      callback({ requestHeaders });
+    }
+  );
+}
+
 app.whenReady().then(() => {
+  setupOpenStreetMapHeaders();
   const cfg = loadConfig();
 
   ipcMain.handle('get-config', () => cfg);
