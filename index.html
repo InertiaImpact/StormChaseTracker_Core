@@ -80,6 +80,33 @@
         </div>
       </div>
 
+      <div class="config-section">
+        <h3>Satellite Relay Config</h3>
+        <div class="grid">
+          <label>Core Satellite Path Prefix
+            <input id="coreRelayPathPrefix" type="text" placeholder="/satellite" />
+          </label>
+          <label>Edge Satellite Relay Base URL
+            <input id="edgeRelayBaseUrl" type="text" placeholder="http://edge-host:8788" />
+          </label>
+          <label>Edge Satellite Path Prefix
+            <input id="edgeRelayPathPrefix" type="text" placeholder="/satellite" />
+          </label>
+          <label>Core Direct Companion Path Prefix (Optional)
+            <input id="reverseRelayPathPrefix" type="text" placeholder="/satellite/core" />
+          </label>
+          <label>Core Companion Base URL
+            <input id="companionBaseUrl" type="text" placeholder="http://127.0.0.1:8000" />
+          </label>
+          <label>Satellite TCP Listen Port
+            <input id="satelliteTcpListenPort" type="number" min="1" max="65535" placeholder="16622" />
+          </label>
+          <label>Relay Timeout (ms)
+            <input id="relayTimeoutMs" type="number" min="1000" step="500" />
+          </label>
+        </div>
+      </div>
+
       <!-- ========== INTELLISHIFT CONNECT API CONFIG ========== -->
       <div class="config-section">
         <h3>Intellishift ConnectAPI Config</h3>

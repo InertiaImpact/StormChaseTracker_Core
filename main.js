@@ -2,7 +2,8 @@ const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, session } = requir
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
-const nodeUrl = require('url');
+const net = require('net');
+const { WebSocketServer } = require('ws');
 
 const CONFIG_FILE = 'stormchasetracker-core-config.json';
 const RECEIVER_CONFIG_FILE = 'stormchasetracker-core-receiver-config.json';
@@ -67,7 +68,15 @@ const DEFAULT_CONFIG = {
 const DEFAULT_RECEIVER_CONFIG = {
   listenHost: '0.0.0.0',
   listenPort: 80,
-  ingestPath: '/ingest'
+  satelliteTcpListenPort: 16622,
+  ingestPath: '/ingest',
+  edgeRelayBaseUrl: '',
+  edgeBridgePath: '/edge-bridge',
+  edgeRelayPathPrefix: '/satellite',
+  coreRelayPathPrefix: '/satellite',
+  reverseRelayPathPrefix: '/satellite/core',
+  companionBaseUrl: 'http://127.0.0.1:8000',
+  relayTimeoutMs: 8000
 };
 
 const state = {
@@ -112,6 +121,7 @@ const countyBounds = new Map();
 
 let receiverCfg = null;
 let receiverServer = null;
+let receiverTcpServer = null;
 let receiverStatusTimer = null;
 let pollSeq = 0;
 let currentPollId = null;
@@ -138,6 +148,15 @@ const intellishiftState = {
   lastError: null,
   lastAuthAt: null,
   accountUsername: null
+};
+
+const edgeBridgeWss = new WebSocketServer({ noServer: true });
+const edgeBridgeState = {
+  socket: null,
+  pendingHttp: new Map(),
+  pendingWs: new Map(),
+  pendingTcp: new Map(),
+  nextRequestId: 1
 };
 
 let intellishiftAuthInFlight = false;
@@ -272,6 +291,506 @@ function saveReceiverConfig(newCfg) {
   fs.writeFileSync(receiverConfigPath(), JSON.stringify(newCfg, null, 2));
 }
 
+function normalizeRelayPathPrefix(value, fallback) {
+  const raw = String(value || '').trim();
+  const normalizedFallback = String(fallback || '/relay').trim();
+  const source = raw || normalizedFallback;
+  const withLead = source.startsWith('/') ? source : `/${source}`;
+  const collapsed = withLead.replace(/\/{2,}/g, '/');
+  return collapsed.length > 1 && collapsed.endsWith('/') ? collapsed.slice(0, -1) : collapsed;
+}
+
+function relaySuffixForPath(reqPath, prefix) {
+  if (reqPath === prefix) return '/';
+  if (reqPath.startsWith(`${prefix}/`)) return reqPath.slice(prefix.length);
+  return null;
+}
+
+function readRequestBodyBuffer(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+
+function relayRequest({ method, targetUrl, reqHeaders, bodyBuffer, timeoutMs }) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(targetUrl);
+    const safeMethod = String(method || 'GET').toUpperCase();
+    const filteredHeaders = {};
+    const sourceHeaders = reqHeaders && typeof reqHeaders === 'object' ? reqHeaders : {};
+    for (const [key, value] of Object.entries(sourceHeaders)) {
+      if (!key) continue;
+      const lower = key.toLowerCase();
+      if (lower === 'host' || lower === 'connection' || lower === 'content-length') continue;
+      filteredHeaders[key] = value;
+    }
+    filteredHeaders.Connection = 'close';
+    if (bodyBuffer && bodyBuffer.length > 0) {
+      filteredHeaders['Content-Length'] = bodyBuffer.length;
+    }
+
+    const req = http.request({
+      method: safeMethod,
+      hostname: parsed.hostname,
+      port: parsed.port || 80,
+      path: `${parsed.pathname || '/'}${parsed.search || ''}`,
+      headers: filteredHeaders,
+      timeout: Math.max(1000, Number(timeoutMs) || 8000),
+      agent: false
+    }, (upstreamRes) => {
+      const chunks = [];
+      upstreamRes.on('data', (chunk) => chunks.push(chunk));
+      upstreamRes.on('end', () => {
+        resolve({
+          statusCode: upstreamRes.statusCode || 502,
+          headers: upstreamRes.headers || {},
+          bodyBuffer: Buffer.concat(chunks)
+        });
+      });
+    });
+
+    req.on('timeout', () => req.destroy(new Error('Relay timeout')));
+    req.on('error', reject);
+    if (bodyBuffer && bodyBuffer.length > 0) {
+      req.write(bodyBuffer);
+    }
+    req.end();
+  });
+}
+
+function normalizeBridgePath(value) {
+  const raw = String(value || '').trim();
+  const source = raw || '/edge-bridge';
+  const withLead = source.startsWith('/') ? source : `/${source}`;
+  const collapsed = withLead.replace(/\/{2,}/g, '/');
+  return collapsed.length > 1 && collapsed.endsWith('/') ? collapsed.slice(0, -1) : collapsed;
+}
+
+function isEdgeBridgeConnected() {
+  return !!edgeBridgeState.socket && edgeBridgeState.socket.readyState === 1;
+}
+
+function relayViaEdgeBridge({ method, pathAndQuery, reqHeaders, bodyBuffer, timeoutMs }) {
+  return new Promise((resolve, reject) => {
+    if (!isEdgeBridgeConnected()) {
+      reject(new Error('edge_bridge_not_connected'));
+      return;
+    }
+
+    const id = edgeBridgeState.nextRequestId++;
+    const timeout = Math.max(1000, Number(timeoutMs) || 8000);
+    const timer = setTimeout(() => {
+      const pending = edgeBridgeState.pendingHttp.get(id);
+      if (!pending) return;
+      edgeBridgeState.pendingHttp.delete(id);
+      pending.reject(new Error('edge_bridge_timeout'));
+    }, timeout);
+
+    edgeBridgeState.pendingHttp.set(id, {
+      resolve,
+      reject,
+      timer
+    });
+
+    try {
+      edgeBridgeState.socket.send(JSON.stringify({
+        type: 'http-request',
+        id,
+        method: String(method || 'GET').toUpperCase(),
+        path: pathAndQuery || '/',
+        headers: reqHeaders || {},
+        bodyBase64: bodyBuffer && bodyBuffer.length > 0 ? bodyBuffer.toString('base64') : ''
+      }));
+    } catch (err) {
+      const pending = edgeBridgeState.pendingHttp.get(id);
+      if (pending) {
+        clearTimeout(pending.timer);
+        edgeBridgeState.pendingHttp.delete(id);
+      }
+      reject(err);
+    }
+  });
+}
+
+function sendEdgeBridgeMessage(payload) {
+  if (!isEdgeBridgeConnected()) throw new Error('edge_bridge_not_connected');
+  edgeBridgeState.socket.send(JSON.stringify(payload));
+}
+
+function closeWsBridgeTunnel(id, reason) {
+  const tunnel = edgeBridgeState.pendingWs.get(id);
+  if (!tunnel) return;
+  edgeBridgeState.pendingWs.delete(id);
+
+  if (tunnel.openTimer) clearTimeout(tunnel.openTimer);
+  try {
+    if (!tunnel.established && tunnel.clientSocket && !tunnel.clientSocket.destroyed) {
+      writeSocketHttpError(tunnel.clientSocket, 502, reason || 'bridge_tunnel_failed');
+    } else if (tunnel.clientSocket && !tunnel.clientSocket.destroyed) {
+      tunnel.clientSocket.destroy();
+    }
+  } catch {
+    // ignore socket teardown issues
+  }
+}
+
+function closeTcpBridgeTunnel(id) {
+  const tunnel = edgeBridgeState.pendingTcp.get(id);
+  if (!tunnel) return;
+  edgeBridgeState.pendingTcp.delete(id);
+  if (tunnel.openTimer) clearTimeout(tunnel.openTimer);
+  try {
+    if (tunnel.clientSocket && !tunnel.clientSocket.destroyed) {
+      tunnel.clientSocket.destroy();
+    }
+  } catch {
+    // ignore socket teardown issues
+  }
+}
+
+function openTcpBridgeTunnel({ clientSocket, timeoutMs }) {
+  if (!isEdgeBridgeConnected()) {
+    try { clientSocket.destroy(); } catch { /* ignore */ }
+    return;
+  }
+
+  clientSocket.setKeepAlive(true, 15000);
+
+  const id = edgeBridgeState.nextRequestId++;
+  const timeout = Math.max(1000, Number(timeoutMs) || 8000);
+  const openTimer = setTimeout(() => closeTcpBridgeTunnel(id), timeout);
+  const tunnel = {
+    id,
+    clientSocket,
+    established: false,
+    openTimer
+  };
+  edgeBridgeState.pendingTcp.set(id, tunnel);
+
+  clientSocket.on('data', (chunk) => {
+    const active = edgeBridgeState.pendingTcp.get(id);
+    if (!active) return;
+    try {
+      sendEdgeBridgeMessage({
+        type: 'tcp-data',
+        id,
+        dataBase64: Buffer.from(chunk).toString('base64')
+      });
+    } catch {
+      closeTcpBridgeTunnel(id);
+    }
+  });
+
+  clientSocket.on('close', () => {
+    if (edgeBridgeState.pendingTcp.has(id)) {
+      try { sendEdgeBridgeMessage({ type: 'tcp-close', id }); } catch { /* ignore */ }
+      closeTcpBridgeTunnel(id);
+    }
+  });
+
+  clientSocket.on('error', () => {
+    if (edgeBridgeState.pendingTcp.has(id)) {
+      try { sendEdgeBridgeMessage({ type: 'tcp-close', id }); } catch { /* ignore */ }
+      closeTcpBridgeTunnel(id);
+    }
+  });
+
+  try {
+    sendEdgeBridgeMessage({
+      type: 'tcp-open',
+      id
+    });
+  } catch {
+    closeTcpBridgeTunnel(id);
+  }
+}
+
+function openWsBridgeTunnel({ req, clientSocket, headBuffer, bridgePath, timeoutMs }) {
+  if (!isEdgeBridgeConnected()) {
+    writeSocketHttpError(clientSocket, 503, 'edge_bridge_not_connected');
+    return;
+  }
+
+  const id = edgeBridgeState.nextRequestId++;
+  const timeout = Math.max(1000, Number(timeoutMs) || 8000);
+  const openTimer = setTimeout(() => closeWsBridgeTunnel(id, 'edge_bridge_tunnel_timeout'), timeout);
+  const tunnel = {
+    id,
+    clientSocket,
+    established: false,
+    openTimer
+  };
+  edgeBridgeState.pendingWs.set(id, tunnel);
+
+  clientSocket.on('data', (chunk) => {
+    const active = edgeBridgeState.pendingWs.get(id);
+    if (!active) return;
+    try {
+      sendEdgeBridgeMessage({
+        type: 'ws-data',
+        id,
+        dataBase64: Buffer.from(chunk).toString('base64')
+      });
+    } catch {
+      closeWsBridgeTunnel(id, 'edge_bridge_not_connected');
+    }
+  });
+
+  clientSocket.on('close', () => {
+    if (edgeBridgeState.pendingWs.has(id)) {
+      try { sendEdgeBridgeMessage({ type: 'ws-close', id }); } catch { /* ignore */ }
+      closeWsBridgeTunnel(id, 'client_socket_closed');
+    }
+  });
+
+  clientSocket.on('error', () => {
+    if (edgeBridgeState.pendingWs.has(id)) {
+      try { sendEdgeBridgeMessage({ type: 'ws-close', id }); } catch { /* ignore */ }
+      closeWsBridgeTunnel(id, 'client_socket_error');
+    }
+  });
+
+  const rawHeaders = Array.isArray(req.rawHeaders) ? req.rawHeaders : [];
+  const headers = {};
+  for (let i = 0; i < rawHeaders.length; i += 2) {
+    const name = rawHeaders[i];
+    const value = rawHeaders[i + 1] ?? '';
+    if (!name) continue;
+    headers[name] = value;
+  }
+
+  try {
+    sendEdgeBridgeMessage({
+      type: 'ws-open',
+      id,
+      method: req.method || 'GET',
+      path: bridgePath || '/',
+      httpVersion: req.httpVersion || '1.1',
+      headers,
+      headBase64: headBuffer && headBuffer.length > 0 ? Buffer.from(headBuffer).toString('base64') : ''
+    });
+  } catch {
+    closeWsBridgeTunnel(id, 'edge_bridge_not_connected');
+  }
+}
+
+edgeBridgeWss.on('connection', (ws) => {
+  if (edgeBridgeState.socket && edgeBridgeState.socket !== ws) {
+    try { edgeBridgeState.socket.close(); } catch { /* ignore */ }
+  }
+  edgeBridgeState.socket = ws;
+
+  ws.on('message', (raw) => {
+    let msg = null;
+    try {
+      msg = JSON.parse(String(raw));
+    } catch {
+      return;
+    }
+    if (!msg || !Number.isFinite(msg.id)) return;
+
+    if (msg.type === 'http-response') {
+      const pending = edgeBridgeState.pendingHttp.get(msg.id);
+      if (!pending) return;
+      clearTimeout(pending.timer);
+      edgeBridgeState.pendingHttp.delete(msg.id);
+
+      if (msg.error) {
+        pending.reject(new Error(String(msg.error)));
+        return;
+      }
+
+      let bodyBuffer = Buffer.alloc(0);
+      try {
+        bodyBuffer = msg.bodyBase64 ? Buffer.from(String(msg.bodyBase64), 'base64') : Buffer.alloc(0);
+      } catch {
+        bodyBuffer = Buffer.alloc(0);
+      }
+
+      pending.resolve({
+        statusCode: Number(msg.statusCode) || 502,
+        headers: msg.headers && typeof msg.headers === 'object' ? msg.headers : {},
+        bodyBuffer
+      });
+      return;
+    }
+
+    const tunnel = edgeBridgeState.pendingWs.get(msg.id);
+    if (msg.type === 'ws-open-ack') {
+      if (!tunnel) return;
+      if (msg.error) {
+        closeWsBridgeTunnel(msg.id, String(msg.error));
+        return;
+      }
+      tunnel.established = true;
+      if (tunnel.openTimer) {
+        clearTimeout(tunnel.openTimer);
+        tunnel.openTimer = null;
+      }
+      return;
+    }
+
+    if (msg.type === 'ws-data') {
+      if (!tunnel) return;
+      let chunk = Buffer.alloc(0);
+      try {
+        chunk = msg.dataBase64 ? Buffer.from(String(msg.dataBase64), 'base64') : Buffer.alloc(0);
+      } catch {
+        chunk = Buffer.alloc(0);
+      }
+      if (tunnel.clientSocket && !tunnel.clientSocket.destroyed && chunk.length > 0) {
+        try { tunnel.clientSocket.write(chunk); } catch { /* ignore */ }
+      }
+      return;
+    }
+
+    if (msg.type === 'ws-close') {
+      if (!tunnel) return;
+      closeWsBridgeTunnel(msg.id, msg.error ? String(msg.error) : 'edge_bridge_tunnel_closed');
+      return;
+    }
+
+    const tcpTunnel = edgeBridgeState.pendingTcp.get(msg.id);
+    if (!tcpTunnel) return;
+
+    if (msg.type === 'tcp-open-ack') {
+      if (msg.error) {
+        closeTcpBridgeTunnel(msg.id);
+        return;
+      }
+      tcpTunnel.established = true;
+      if (tcpTunnel.openTimer) {
+        clearTimeout(tcpTunnel.openTimer);
+        tcpTunnel.openTimer = null;
+      }
+      return;
+    }
+
+    if (msg.type === 'tcp-data') {
+      let chunk = Buffer.alloc(0);
+      try {
+        chunk = msg.dataBase64 ? Buffer.from(String(msg.dataBase64), 'base64') : Buffer.alloc(0);
+      } catch {
+        chunk = Buffer.alloc(0);
+      }
+      if (tcpTunnel.clientSocket && !tcpTunnel.clientSocket.destroyed && chunk.length > 0) {
+        try { tcpTunnel.clientSocket.write(chunk); } catch { /* ignore */ }
+      }
+      return;
+    }
+
+    if (msg.type === 'tcp-close') {
+      closeTcpBridgeTunnel(msg.id);
+    }
+  });
+
+  ws.on('close', () => {
+    if (edgeBridgeState.socket === ws) {
+      edgeBridgeState.socket = null;
+    }
+    for (const [id] of edgeBridgeState.pendingWs.entries()) {
+      closeWsBridgeTunnel(id, 'edge_bridge_disconnected');
+    }
+    for (const [id] of edgeBridgeState.pendingTcp.entries()) {
+      closeTcpBridgeTunnel(id);
+    }
+  });
+
+  ws.on('error', () => {
+    if (edgeBridgeState.socket === ws) {
+      edgeBridgeState.socket = null;
+    }
+    for (const [id] of edgeBridgeState.pendingWs.entries()) {
+      closeWsBridgeTunnel(id, 'edge_bridge_error');
+    }
+    for (const [id] of edgeBridgeState.pendingTcp.entries()) {
+      closeTcpBridgeTunnel(id);
+    }
+  });
+});
+
+function writeSocketHttpError(socket, statusCode, errorCode) {
+  if (!socket || socket.destroyed) return;
+  const statusText = statusCode === 400
+    ? 'Bad Request'
+    : statusCode === 404
+      ? 'Not Found'
+      : statusCode === 502
+        ? 'Bad Gateway'
+        : 'Error';
+  const body = JSON.stringify({ error: errorCode || 'relay_error' });
+  try {
+    socket.write(
+      `HTTP/1.1 ${statusCode} ${statusText}\r\n`
+      + 'Content-Type: application/json\r\n'
+      + `Content-Length: ${Buffer.byteLength(body)}\r\n`
+      + 'Connection: close\r\n\r\n'
+      + body
+    );
+  } catch {
+    // ignore write failures before destroy
+  }
+  socket.destroy();
+}
+
+function relayUpgradeRequest({ clientReq, clientSocket, headBuffer, targetUrl, timeoutMs }) {
+  const parsed = new URL(targetUrl);
+  const upstreamSocket = net.connect({
+    host: parsed.hostname,
+    port: parsed.port ? Number(parsed.port) : 80
+  });
+  const timeout = Math.max(1000, Number(timeoutMs) || 8000);
+  upstreamSocket.setTimeout(timeout);
+
+  let closed = false;
+  const closeBoth = () => {
+    if (closed) return;
+    closed = true;
+    try { upstreamSocket.destroy(); } catch { /* ignore */ }
+    try { clientSocket.destroy(); } catch { /* ignore */ }
+  };
+
+  upstreamSocket.on('connect', () => {
+    const rawHeaders = Array.isArray(clientReq.rawHeaders) ? clientReq.rawHeaders : [];
+    const headerLines = [];
+    let sawConnection = false;
+    let sawUpgrade = false;
+
+    for (let i = 0; i < rawHeaders.length; i += 2) {
+      const name = rawHeaders[i];
+      const value = rawHeaders[i + 1] ?? '';
+      if (!name) continue;
+      const lower = String(name).toLowerCase();
+      if (lower === 'host' || lower === 'content-length' || lower === 'proxy-connection') continue;
+      if (lower === 'connection') sawConnection = true;
+      if (lower === 'upgrade') sawUpgrade = true;
+      headerLines.push(`${name}: ${value}`);
+    }
+
+    if (!sawConnection) headerLines.push('Connection: Upgrade');
+    if (!sawUpgrade) headerLines.push('Upgrade: websocket');
+    headerLines.push(`Host: ${parsed.host}`);
+
+    const targetPath = `${parsed.pathname || '/'}${parsed.search || ''}`;
+    const requestLine = `${clientReq.method || 'GET'} ${targetPath} HTTP/${clientReq.httpVersion || '1.1'}`;
+    upstreamSocket.write(`${requestLine}\r\n${headerLines.join('\r\n')}\r\n\r\n`);
+    if (headBuffer && headBuffer.length > 0) {
+      upstreamSocket.write(headBuffer);
+    }
+    clientSocket.pipe(upstreamSocket);
+    upstreamSocket.pipe(clientSocket);
+  });
+
+  upstreamSocket.on('timeout', closeBoth);
+  upstreamSocket.on('error', closeBoth);
+  clientSocket.on('error', closeBoth);
+  clientSocket.on('close', closeBoth);
+  upstreamSocket.on('close', closeBoth);
+}
+
 function createWindow() {
   const iconPath = path.join(__dirname, 'assets', 'RoadWarrior_Core.ico');
   mainWindow = new BrowserWindow({
@@ -340,6 +859,15 @@ function setupMenu() {
               mainWindow.webContents.send('toggle-config', showConfig);
             }
           }
+        }
+      ]
+    },
+    {
+      label: 'Help',
+      submenu: [
+        {
+          label: `Version ${app.getVersion()}`,
+          enabled: false
         }
       ]
     }
@@ -1152,7 +1680,16 @@ function formatReceiverStatus(currentCfg) {
     connected,
     listenHost: currentCfg.listenHost,
     listenPort: currentCfg.listenPort,
+    satelliteTcpListenPort: Number(currentCfg.satelliteTcpListenPort) || 16622,
     ingestPath: currentCfg.ingestPath,
+    edgeRelayBaseUrl: currentCfg.edgeRelayBaseUrl,
+    edgeBridgePath: currentCfg.edgeBridgePath,
+    edgeBridgeConnected: isEdgeBridgeConnected(),
+    edgeRelayPathPrefix: currentCfg.edgeRelayPathPrefix,
+    coreRelayPathPrefix: currentCfg.coreRelayPathPrefix,
+    reverseRelayPathPrefix: currentCfg.reverseRelayPathPrefix,
+    companionBaseUrl: currentCfg.companionBaseUrl,
+    relayTimeoutMs: currentCfg.relayTimeoutMs,
     lastUpdateAt: receiverState.lastUpdateAt,
     durationMs,
     lastSenderIp: receiverState.lastSenderIp,
@@ -1172,13 +1709,71 @@ function stopReceiverServer() {
     try { receiverServer.close(); } catch { /* ignore */ }
     receiverServer = null;
   }
+  if (receiverTcpServer) {
+    try { receiverTcpServer.close(); } catch { /* ignore */ }
+    receiverTcpServer = null;
+  }
   receiverState.listening = false;
   receiverState.firstUpdateAt = null;
+
+  for (const [id, pending] of edgeBridgeState.pendingHttp.entries()) {
+    clearTimeout(pending.timer);
+    pending.reject(new Error('receiver_restarting'));
+    edgeBridgeState.pendingHttp.delete(id);
+  }
+  for (const [id] of edgeBridgeState.pendingWs.entries()) {
+    closeWsBridgeTunnel(id, 'receiver_restarting');
+  }
+  for (const [id] of edgeBridgeState.pendingTcp.entries()) {
+    closeTcpBridgeTunnel(id);
+  }
 }
 
 function startReceiverServer(currentCfg) {
   stopReceiverServer();
   receiverState.serverError = null;
+
+  const resolveRelayTarget = (parsedRequest, reqPath) => {
+    const coreRelayPathPrefix = normalizeRelayPathPrefix(currentCfg.coreRelayPathPrefix, '/satellite');
+    const edgeRelayPathPrefix = normalizeRelayPathPrefix(currentCfg.edgeRelayPathPrefix, '/satellite');
+    const reverseRelayPathPrefix = normalizeRelayPathPrefix(currentCfg.reverseRelayPathPrefix, '/satellite/core');
+
+    const coreRelaySuffix = relaySuffixForPath(reqPath, coreRelayPathPrefix);
+    const reverseRelaySuffix = relaySuffixForPath(reqPath, reverseRelayPathPrefix);
+    if (coreRelaySuffix === null && reverseRelaySuffix === null) return null;
+
+    const timeoutMs = Math.max(1000, Number(currentCfg.relayTimeoutMs) || 8000);
+    if (coreRelaySuffix !== null) {
+      const edgeBaseUrl = String(currentCfg.edgeRelayBaseUrl || '').trim();
+      const targetPath = `${edgeRelayPathPrefix}${coreRelaySuffix === '/' ? '' : coreRelaySuffix}${parsedRequest.search || ''}`;
+      if (edgeBaseUrl) {
+        return {
+          timeoutMs,
+          targetUrl: `${edgeBaseUrl.replace(/\/$/, '')}${targetPath}`
+        };
+      }
+
+      if (!isEdgeBridgeConnected()) {
+        return { error: 'edge_relay_unreachable_no_bridge', statusCode: 503 };
+      }
+
+      return {
+        timeoutMs,
+        bridge: true,
+        bridgePath: targetPath
+      };
+    }
+
+    const companionBaseUrl = String(currentCfg.companionBaseUrl || '').trim();
+    if (!companionBaseUrl) {
+      return { error: 'companion_base_url_not_configured', statusCode: 400 };
+    }
+    const targetPath = `${reverseRelaySuffix === '/' ? '' : reverseRelaySuffix}${parsedRequest.search || ''}`;
+    return {
+      timeoutMs,
+      targetUrl: `${companionBaseUrl.replace(/\/$/, '')}${targetPath || '/'}`
+    };
+  };
 
   const webRoot = path.join(__dirname, 'web');
   const readWebStatic = (fileName, res, contentType) => {
@@ -1196,11 +1791,64 @@ function startReceiverServer(currentCfg) {
   receiverServer = http.createServer((req, res) => {
     try {
       const requestTarget = typeof req.url === 'string' && req.url.length > 0 ? req.url : '/';
-      const parsed = nodeUrl.parse(requestTarget);
+      const parsed = new URL(requestTarget, 'http://127.0.0.1');
       const reqPath = typeof parsed.pathname === 'string' && parsed.pathname.length > 0 ? parsed.pathname : '/';
+      const edgeBridgePath = normalizeBridgePath(currentCfg.edgeBridgePath);
 
       const ingestPath = currentCfg.ingestPath.startsWith('/') ? currentCfg.ingestPath : `/${currentCfg.ingestPath}`;
       const ingestAlt = ingestPath.endsWith('/') ? ingestPath.slice(0, -1) : `${ingestPath}/`;
+      if (reqPath === edgeBridgePath) {
+        res.writeHead(426, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'upgrade_required' }));
+        return;
+      }
+      const relayTarget = resolveRelayTarget(parsed, reqPath);
+      if (relayTarget) {
+        if (relayTarget.error) {
+          res.writeHead(relayTarget.statusCode || 400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: relayTarget.error }));
+          return;
+        }
+
+        readRequestBodyBuffer(req)
+          .then((bodyBuffer) => {
+            if (relayTarget.bridge) {
+              return relayViaEdgeBridge({
+                method: req.method,
+                pathAndQuery: relayTarget.bridgePath,
+                reqHeaders: req.headers,
+                bodyBuffer,
+                timeoutMs: relayTarget.timeoutMs
+              });
+            }
+            return relayRequest({
+              method: req.method,
+              targetUrl: relayTarget.targetUrl,
+              reqHeaders: req.headers,
+              bodyBuffer,
+              timeoutMs: relayTarget.timeoutMs
+            });
+          })
+          .then((upstream) => {
+            const responseHeaders = {
+              'Content-Type': upstream.headers['content-type'] || 'application/json',
+              'Cache-Control': 'no-store'
+            };
+            res.writeHead(upstream.statusCode, responseHeaders);
+            res.end(upstream.bodyBuffer);
+          })
+          .catch((err) => {
+            const msg = err && err.message ? err.message : String(err);
+            console.warn(`[relay] ${req.method || 'GET'} ${req.url || '/'} failed: ${msg}`);
+            if (!res.headersSent) {
+              res.writeHead(502, { 'Content-Type': 'application/json' });
+            }
+            if (!res.writableEnded) {
+              res.end(JSON.stringify({ error: 'relay_failed', message: msg }));
+            }
+          });
+        return;
+      }
 
     if (req.method === 'GET' && (reqPath === '/' || reqPath === '/index.html')) {
       readWebStatic('index.html', res, 'text/html; charset=utf-8');
@@ -1337,6 +1985,49 @@ function startReceiverServer(currentCfg) {
     }
   });
 
+  receiverServer.on('upgrade', (req, socket, head) => {
+    try {
+      const requestTarget = typeof req.url === 'string' && req.url.length > 0 ? req.url : '/';
+      const parsed = new URL(requestTarget, 'http://127.0.0.1');
+      const reqPath = typeof parsed.pathname === 'string' && parsed.pathname.length > 0 ? parsed.pathname : '/';
+      const edgeBridgePath = normalizeBridgePath(currentCfg.edgeBridgePath);
+      if (reqPath === edgeBridgePath) {
+        edgeBridgeWss.handleUpgrade(req, socket, head, (ws) => {
+          edgeBridgeWss.emit('connection', ws, req);
+        });
+        return;
+      }
+      const relayTarget = resolveRelayTarget(parsed, reqPath);
+      if (!relayTarget) {
+        writeSocketHttpError(socket, 404, 'not_found');
+        return;
+      }
+      if (relayTarget.error) {
+        writeSocketHttpError(socket, relayTarget.statusCode || 400, relayTarget.error);
+        return;
+      }
+      if (relayTarget.bridge) {
+        openWsBridgeTunnel({
+          req,
+          clientSocket: socket,
+          headBuffer: head,
+          bridgePath: relayTarget.bridgePath,
+          timeoutMs: relayTarget.timeoutMs
+        });
+        return;
+      }
+      relayUpgradeRequest({
+        clientReq: req,
+        clientSocket: socket,
+        headBuffer: head,
+        targetUrl: relayTarget.targetUrl,
+        timeoutMs: relayTarget.timeoutMs
+      });
+    } catch {
+      writeSocketHttpError(socket, 502, 'relay_upgrade_failed');
+    }
+  });
+
   receiverServer.on('error', (err) => {
     if (err && err.code === 'EACCES') {
       receiverState.serverError = 'Bind failed (EACCES). Run as Administrator to use port 80.';
@@ -1351,6 +2042,23 @@ function startReceiverServer(currentCfg) {
   receiverServer.listen(currentCfg.listenPort, currentCfg.listenHost, () => {
     receiverState.listening = true;
   });
+
+  const satelliteTcpPort = Number(currentCfg.satelliteTcpListenPort) || 16622;
+  if (satelliteTcpPort > 0) {
+    receiverTcpServer = net.createServer((clientSocket) => {
+      const timeoutMs = Math.max(1000, Number(currentCfg.relayTimeoutMs) || 8000);
+      openTcpBridgeTunnel({ clientSocket, timeoutMs });
+    });
+
+    receiverTcpServer.on('error', (err) => {
+      const msg = err && err.message ? err.message : String(err);
+      console.warn(`[receiver] Satellite TCP listener failed on ${currentCfg.listenHost}:${satelliteTcpPort}: ${msg}`);
+    });
+
+    receiverTcpServer.listen(satelliteTcpPort, currentCfg.listenHost, () => {
+      console.log(`[receiver] Satellite TCP listener on ${currentCfg.listenHost}:${satelliteTcpPort}`);
+    });
+  }
 }
 
 async function pollOnce() {

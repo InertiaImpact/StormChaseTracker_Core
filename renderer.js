@@ -15,6 +15,13 @@ const els = {
   localDataUrl: document.getElementById('localDataUrl'),
   localFailoverSeconds: document.getElementById('localFailoverSeconds'),
   localRecheckSeconds: document.getElementById('localRecheckSeconds'),
+  coreRelayPathPrefix: document.getElementById('coreRelayPathPrefix'),
+  edgeRelayBaseUrl: document.getElementById('edgeRelayBaseUrl'),
+  edgeRelayPathPrefix: document.getElementById('edgeRelayPathPrefix'),
+  reverseRelayPathPrefix: document.getElementById('reverseRelayPathPrefix'),
+  companionBaseUrl: document.getElementById('companionBaseUrl'),
+  satelliteTcpListenPort: document.getElementById('satelliteTcpListenPort'),
+  relayTimeoutMs: document.getElementById('relayTimeoutMs'),
   updateIntervalSeconds: document.getElementById('updateIntervalSeconds'),
   webPollIntervalSeconds: document.getElementById('webPollIntervalSeconds'),
   cloudEnabled: document.getElementById('cloudEnabled'),
@@ -64,6 +71,7 @@ let followZoomValue = 13;
 let lastPosition = null;
 let styleSelect = null;
 let currentConfig = null;
+let currentReceiverConfig = null;
 let intellishiftVehiclesLoaded = false;
 let isDirty = false;
 
@@ -320,6 +328,43 @@ function getFormConfig() {
   };
 }
 
+function applyReceiverConfig(cfg) {
+  currentReceiverConfig = cfg || {};
+  if (els.coreRelayPathPrefix) {
+    els.coreRelayPathPrefix.value = currentReceiverConfig.coreRelayPathPrefix || '/satellite';
+  }
+  if (els.edgeRelayBaseUrl) {
+    els.edgeRelayBaseUrl.value = currentReceiverConfig.edgeRelayBaseUrl || '';
+  }
+  if (els.edgeRelayPathPrefix) {
+    els.edgeRelayPathPrefix.value = currentReceiverConfig.edgeRelayPathPrefix || '/satellite';
+  }
+    if (els.reverseRelayPathPrefix) {
+      els.reverseRelayPathPrefix.value = currentReceiverConfig.reverseRelayPathPrefix || '/satellite/core';
+    }
+    if (els.satelliteTcpListenPort) {
+      els.satelliteTcpListenPort.value = currentReceiverConfig.satelliteTcpListenPort || 16622;
+    }
+  if (els.companionBaseUrl) {
+    els.companionBaseUrl.value = currentReceiverConfig.companionBaseUrl || 'http://127.0.0.1:8000';
+  }
+  if (els.relayTimeoutMs) {
+    els.relayTimeoutMs.value = currentReceiverConfig.relayTimeoutMs || 8000;
+  }
+}
+
+function getReceiverFormConfig() {
+  return {
+    coreRelayPathPrefix: els.coreRelayPathPrefix?.value?.trim() || '/satellite',
+    edgeRelayBaseUrl: els.edgeRelayBaseUrl?.value?.trim() || '',
+    edgeRelayPathPrefix: els.edgeRelayPathPrefix?.value?.trim() || '/satellite',
+    reverseRelayPathPrefix: els.reverseRelayPathPrefix?.value?.trim() || '/satellite/core',
+      satelliteTcpListenPort: Number(els.satelliteTcpListenPort?.value || 16622),
+    companionBaseUrl: els.companionBaseUrl?.value?.trim() || 'http://127.0.0.1:8000',
+    relayTimeoutMs: Number(els.relayTimeoutMs?.value || 8000)
+  };
+}
+
 function setAuthModalVisible(show) {
   if (!els.authModal) return;
   els.authModal.classList.toggle('show', !!show);
@@ -447,13 +492,22 @@ function updateStatus(status) {
 }
 
 async function saveConfigFromForm() {
-  const saved = await window.api.setConfig(getFormConfig());
+  const [saved, savedReceiver] = await Promise.all([
+    window.api.setConfig(getFormConfig()),
+    window.api.setReceiverConfig(getReceiverFormConfig())
+  ]);
   applyConfig(saved);
-  return saved;
+  applyReceiverConfig(savedReceiver);
+  setDirty(false);
+  return { saved, savedReceiver };
 }
 
-window.api.getConfig().then((cfg) => {
+Promise.all([
+  window.api.getConfig(),
+  window.api.getReceiverConfig()
+]).then(([cfg, receiverCfg]) => {
   applyConfig(cfg);
+  applyReceiverConfig(receiverCfg);
   window.api.intellishiftTokenStatus().then((status) => {
     updateIntellishiftTokenStatus(status);
     if (status?.valid) refreshIntellishiftVehicles();
