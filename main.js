@@ -1132,14 +1132,7 @@ function normalizeLocalPayload(payload, lastUpdateUnix) {
   const headingDeg = payload.heading_deg ?? payload.headingDeg ?? payload.heading ?? null;
   const speedMph = payload.speed_mph ?? payload.speedMph ?? null;
 
-  const weather = payload.weather
-    ?? payload.wx
-    ?? payload.weatherRaw
-    ?? payload.wxRaw
-    ?? payload.weather_data
-    ?? payload.weatherData
-    ?? payload.weatherdata
-    ?? null;
+  const wxData = payload.WxData ?? null;
 
   return {
     latitude,
@@ -1153,7 +1146,7 @@ function normalizeLocalPayload(payload, lastUpdateUnix) {
     townName: payload.town_name ?? null,
     countyName: payload.county_name ?? null,
     stateName: payload.state_name ?? payload.state ?? null,
-    weather,
+    WxData: wxData,
     source: 'EdgeReceiver'
   };
 }
@@ -1303,11 +1296,7 @@ function formatHeadingDirection(deg) {
 
 function buildXpressionPayload(data) {
   if (!data) return null;
-  const fallbackWeather = receiverState?.lastPayload?.weather
-    ?? receiverState?.lastPayload?.wx
-    ?? receiverState?.lastPayload?.weatherRaw
-    ?? receiverState?.lastPayload?.wxRaw
-    ?? null;
+  const fallbackWxData = receiverState?.lastPayload?.WxData ?? null;
   const headingDirection = formatHeadingDirection(data.headingDeg);
   const nearestCity = data.townName || formatXpressionSimple(data);
   return {
@@ -1316,7 +1305,7 @@ function buildXpressionPayload(data) {
     headingDeg: data.headingDeg ?? null,
     headingDir: headingDirection || null,
     speedMph: data.speedMph ?? null,
-    weather: data.weather ?? data.wx ?? fallbackWeather,
+    WxData: data.WxData ?? fallbackWxData,
     road: data.streetName ?? null,
     nearestCity: nearestCity || null,
     state: data.stateName ?? null,
@@ -1665,6 +1654,21 @@ function buildStatusPayload() {
   };
 }
 
+function buildRoadwarriorPayload() {
+  const status = buildStatusPayload();
+  const data = status?.data && typeof status.data === 'object'
+    ? { ...status.data }
+    : null;
+  const fallbackWxData = receiverState?.lastPayload?.WxData ?? null;
+
+  if (data) {
+    const mergedWxData = data.WxData ?? fallbackWxData ?? null;
+    data.WxData = mergedWxData;
+  }
+
+  return data;
+}
+
 function sendStatus() {
   if (mainWindow && mainWindow.webContents) {
     mainWindow.webContents.send('status', buildStatusPayload());
@@ -1743,6 +1747,29 @@ function startReceiverServer(currentCfg) {
     if (coreRelaySuffix === null && reverseRelaySuffix === null) return null;
 
     const timeoutMs = Math.max(1000, Number(currentCfg.relayTimeoutMs) || 8000);
+    // Prefer the more-specific reverse relay path when prefixes overlap (for example /satellite and /satellite/core).
+    if (reverseRelaySuffix !== null) {
+      const companionBaseUrl = String(currentCfg.companionBaseUrl || '').trim();
+      // Backward-compatible behavior:
+      // - If reverse and core prefixes overlap, preserve the legacy '/core...' suffix
+      //   that existed when '/satellite/core' was captured by the broader '/satellite' route.
+      // - If companion base URL is not configured, continue into the core/edge route instead
+      //   of hard-failing so existing configs keep working.
+      if (companionBaseUrl) {
+        const preferredSuffix = coreRelaySuffix !== null ? coreRelaySuffix : reverseRelaySuffix;
+        const targetPath = `${preferredSuffix === '/' ? '' : preferredSuffix}${parsedRequest.search || ''}`;
+        return {
+          timeoutMs,
+          targetUrl: `${companionBaseUrl.replace(/\/$/, '')}${targetPath || '/'}`
+        };
+      }
+
+      // If reverse path is unique (no overlap with core path), surface a clear config error.
+      if (coreRelaySuffix === null) {
+        return { error: 'companion_base_url_not_configured', statusCode: 400 };
+      }
+    }
+
     if (coreRelaySuffix !== null) {
       const edgeBaseUrl = String(currentCfg.edgeRelayBaseUrl || '').trim();
       const targetPath = `${edgeRelayPathPrefix}${coreRelaySuffix === '/' ? '' : coreRelaySuffix}${parsedRequest.search || ''}`;
@@ -1764,15 +1791,7 @@ function startReceiverServer(currentCfg) {
       };
     }
 
-    const companionBaseUrl = String(currentCfg.companionBaseUrl || '').trim();
-    if (!companionBaseUrl) {
-      return { error: 'companion_base_url_not_configured', statusCode: 400 };
-    }
-    const targetPath = `${reverseRelaySuffix === '/' ? '' : reverseRelaySuffix}${parsedRequest.search || ''}`;
-    return {
-      timeoutMs,
-      targetUrl: `${companionBaseUrl.replace(/\/$/, '')}${targetPath || '/'}`
-    };
+    return null;
   };
 
   const webRoot = path.join(__dirname, 'web');
@@ -1903,6 +1922,13 @@ function startReceiverServer(currentCfg) {
 
     if (req.method === 'GET' && reqPath === '/api/status') {
       const payload = buildStatusPayload();
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(payload));
+      return;
+    }
+
+    if (req.method === 'GET' && (reqPath === '/api/wx/Roadwarrior' || reqPath.toLowerCase() === '/api/wx/roadwarrior')) {
+      const payload = buildRoadwarriorPayload();
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify(payload));
       return;
