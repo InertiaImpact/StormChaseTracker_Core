@@ -271,6 +271,10 @@ main {
   gap: 12px 16px;
 }
 
+.grid .full {
+  grid-column: 1 / -1;
+}
+
 .config-section {
   margin-bottom: 24px;
   padding-bottom: 20px;
@@ -416,6 +420,10 @@ input, select {
 
 .actions {
   margin-top: 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 button {
@@ -508,6 +516,34 @@ button.secondary {
 
 button.secondary:hover {
   background: #d7dce9;
+}
+
+.stat {
+  background: #f8fafc;
+  border: 1px solid #d7dce9;
+  border-radius: 8px;
+  padding: 10px 12px;
+  min-width: 0;
+}
+
+.stat span {
+  display: block;
+  color: #7b8196;
+  font-size: 11px;
+}
+
+.stat strong {
+  display: block;
+  margin-top: 4px;
+  color: #1f2430;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.action-status {
+  color: #5c6275;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .status-row {

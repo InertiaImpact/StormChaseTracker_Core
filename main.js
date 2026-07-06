@@ -1,8 +1,9 @@
-const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, session } = require('electron');
+const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, session, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
 const net = require('net');
+const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 
 const CONFIG_FILE = 'stormchasetracker-core-config.json';
@@ -10,6 +11,16 @@ const RECEIVER_CONFIG_FILE = 'stormchasetracker-core-receiver-config.json';
 const LEGACY_CONFIG_FILE = 'rwmapv2-config.json';
 const LEGACY_RECEIVER_CONFIG_FILE = 'rwmapv2-receiver-config.json';
 const SECRETS_FILE = 'secrets.json';
+const UPDATE_DIR_NAME = 'versions';
+
+const singleInstanceLock = app.requestSingleInstanceLock();
+if (!singleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    revealMainWindow();
+  });
+}
 
 const DEFAULT_CONFIG = {
   updateIntervalSeconds: 5,
@@ -17,6 +28,11 @@ const DEFAULT_CONFIG = {
   idlePollIntervalSeconds: 120,
   webHost: '0.0.0.0',
   webPort: 8787,
+
+  // ========== UPDATE PUBLISHING ==========
+  updates: {
+    versionsDirectory: ''
+  },
 
   // ========== DATA SOURCE CONFIG ==========
   dataSource: {
@@ -167,6 +183,13 @@ const REMOTE_SWITCH_SUCCESS_THRESHOLD = 2;
 const MAX_PLAUSIBLE_SPEED_MPH = 220;
 const POSITION_BACKWARD_ALLOWANCE_SECONDS = 5;
 
+function revealMainWindow() {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  if (!mainWindow.isVisible()) mainWindow.show();
+  mainWindow.focus();
+}
+
 function configPath() {
   return path.join(app.getPath('userData'), CONFIG_FILE);
 }
@@ -177,6 +200,146 @@ function legacyConfigPath() {
 
 function secretsPath() {
   return path.join(__dirname, SECRETS_FILE);
+}
+
+function versionsDirectoryPath() {
+  const configured = String(cfg?.updates?.versionsDirectory || '').trim();
+  return configured || path.join(app.getPath('userData'), UPDATE_DIR_NAME);
+}
+
+function ensureVersionsDirectory() {
+  const dir = versionsDirectoryPath();
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function compareVersions(a, b) {
+  const clean = (value) => String(value || '0').split(/[+-]/)[0].split('.').map((part) => parseInt(part, 10) || 0);
+  const aa = clean(a);
+  const bb = clean(b);
+  for (let i = 0; i < Math.max(aa.length, bb.length, 3); i += 1) {
+    const diff = (aa[i] || 0) - (bb[i] || 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+function inferUpdateAppId(fileName) {
+  const lower = String(fileName || '').toLowerCase();
+  if (lower.includes('edge') || lower.includes('sender')) return 'edge';
+  if (lower.includes('client')) return 'client';
+  if (lower.includes('core') || lower.includes('server')) return 'core';
+  return null;
+}
+
+function inferUpdateKind(fileName) {
+  const ext = path.extname(fileName).toLowerCase();
+  if (ext === '.exe') return 'nsis';
+  if (ext === '.msi') return 'msi';
+  if (ext === '.zip') return 'zip';
+  return ext.replace(/^\./, '') || 'file';
+}
+
+function sha256File(filePath) {
+  const hash = crypto.createHash('sha256');
+  hash.update(fs.readFileSync(filePath));
+  return hash.digest('hex');
+}
+
+function buildUpdateManifest(hostForUrls) {
+  const dir = ensureVersionsDirectory();
+  const apps = {
+    core: { appId: 'core', currentVersion: app.getVersion(), versions: [] },
+    edge: { appId: 'edge', versions: [] },
+    client: { appId: 'client', versions: [] }
+  };
+  const allowedExts = new Set(['.exe', '.msi', '.zip']);
+
+  let entries = [];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    entries = [];
+  }
+
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const fileName = entry.name;
+    const ext = path.extname(fileName).toLowerCase();
+    if (!allowedExts.has(ext)) continue;
+    const appId = inferUpdateAppId(fileName);
+    if (!appId || !apps[appId]) continue;
+    const versionMatch = fileName.match(/(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)/);
+    if (!versionMatch) continue;
+
+    const filePath = path.join(dir, fileName);
+    let stat = null;
+    try {
+      stat = fs.statSync(filePath);
+    } catch {
+      continue;
+    }
+
+    apps[appId].versions.push({
+      version: versionMatch[1],
+      fileName,
+      sizeBytes: stat.size,
+      publishedAt: stat.mtime.toISOString(),
+      sha256: sha256File(filePath),
+      kind: inferUpdateKind(fileName),
+      downloadUrl: `${hostForUrls || ''}/api/updates/download?file=${encodeURIComponent(fileName)}`
+    });
+  }
+
+  for (const appInfo of Object.values(apps)) {
+    appInfo.versions.sort((a, b) => {
+      const byVersion = compareVersions(b.version, a.version);
+      if (byVersion !== 0) return byVersion;
+      return String(b.publishedAt).localeCompare(String(a.publishedAt));
+    });
+    appInfo.latest = appInfo.versions[0] || null;
+  }
+
+  return {
+    generatedAt: new Date().toISOString(),
+    serverAppId: 'core',
+    serverVersion: app.getVersion(),
+    versionsDirectory: dir,
+    apps
+  };
+}
+
+function resolveUpdateFile(fileName) {
+  const dir = ensureVersionsDirectory();
+  const baseName = path.basename(String(fileName || ''));
+  if (!baseName) return null;
+  const resolved = path.resolve(dir, baseName);
+  const root = path.resolve(dir);
+  if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) return null;
+  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) return null;
+  return { filePath: resolved, fileName: baseName };
+}
+
+function serveUpdateDownload(parsed, res) {
+  const file = resolveUpdateFile(parsed.searchParams.get('file'));
+  if (!file) {
+    res.writeHead(404, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ error: 'update_file_not_found' }));
+    return;
+  }
+
+  const ext = path.extname(file.fileName).toLowerCase();
+  const contentType = ext === '.exe'
+    ? 'application/vnd.microsoft.portable-executable'
+    : (ext === '.msi' ? 'application/x-msi' : 'application/octet-stream');
+  const stat = fs.statSync(file.filePath);
+  res.writeHead(200, {
+    'Content-Type': contentType,
+    'Content-Length': stat.size,
+    'Cache-Control': 'no-store',
+    'Content-Disposition': `attachment; filename="${file.fileName.replace(/"/g, '')}"`
+  });
+  fs.createReadStream(file.filePath).pipe(res);
 }
 
 function receiverConfigPath() {
@@ -248,6 +411,11 @@ function normalizeLegacyConfig(parsed) {
   next.testing = {
     ...(parsed.testing || {}),
     forceSource: parsed.testing?.forceSource ?? parsed.forceSource ?? 'off'
+  };
+
+  next.updates = {
+    ...(parsed.updates || {}),
+    versionsDirectory: parsed.updates?.versionsDirectory ?? parsed.versionsDirectory ?? ''
   };
 
   return next;
@@ -1813,6 +1981,7 @@ function startReceiverServer(currentCfg) {
       const parsed = new URL(requestTarget, 'http://127.0.0.1');
       const reqPath = typeof parsed.pathname === 'string' && parsed.pathname.length > 0 ? parsed.pathname : '/';
       const edgeBridgePath = normalizeBridgePath(currentCfg.edgeBridgePath);
+      const requestHost = req.headers.host ? `http://${req.headers.host}` : '';
 
       const ingestPath = currentCfg.ingestPath.startsWith('/') ? currentCfg.ingestPath : `/${currentCfg.ingestPath}`;
       const ingestAlt = ingestPath.endsWith('/') ? ingestPath.slice(0, -1) : `${ingestPath}/`;
@@ -1865,9 +2034,21 @@ function startReceiverServer(currentCfg) {
             if (!res.writableEnded) {
               res.end(JSON.stringify({ error: 'relay_failed', message: msg }));
             }
-          });
+        });
         return;
       }
+
+    if (req.method === 'GET' && (reqPath === '/api/updates' || reqPath === '/api/updates/manifest')) {
+      const manifest = buildUpdateManifest(requestHost);
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(manifest));
+      return;
+    }
+
+    if (req.method === 'GET' && reqPath === '/api/updates/download') {
+      serveUpdateDownload(parsed, res);
+      return;
+    }
 
     if (req.method === 'GET' && (reqPath === '/' || reqPath === '/index.html')) {
       readWebStatic('index.html', res, 'text/html; charset=utf-8');
@@ -2380,6 +2561,7 @@ app.whenReady().then(() => {
   setupOpenStreetMapHeaders();
   migrateLegacyConfigFiles();
   cfg = loadConfig();
+  ensureVersionsDirectory();
   receiverCfg = loadReceiverConfig();
   createWindow();
   setupTray();
@@ -2404,6 +2586,17 @@ app.whenReady().then(() => {
     saveReceiverConfig(receiverCfg);
     startReceiverServer(receiverCfg);
     return receiverCfg;
+  });
+
+  ipcMain.handle('updates-get-publisher-info', () => ({
+    currentVersion: app.getVersion(),
+    versionsDirectory: ensureVersionsDirectory()
+  }));
+
+  ipcMain.handle('updates-open-directory', async () => {
+    const dir = ensureVersionsDirectory();
+    const result = await shell.openPath(dir);
+    return { ok: !result, message: result || '' };
   });
 
   ipcMain.handle('intellishift-token-status', async () => {

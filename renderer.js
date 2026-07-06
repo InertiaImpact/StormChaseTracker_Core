@@ -54,6 +54,11 @@ const els = {
   authSaveBtn: document.getElementById('authSaveBtn'),
   saveBanner: document.getElementById('saveBanner'),
   saveBtn: document.getElementById('saveBtn'),
+  coreVersion: document.getElementById('coreVersion'),
+  updatesVersionsDirectory: document.getElementById('updatesVersionsDirectory'),
+  versionsDirectory: document.getElementById('versionsDirectory'),
+  openVersionsDirectoryBtn: document.getElementById('openVersionsDirectoryBtn'),
+  versionsDirectoryStatus: document.getElementById('versionsDirectoryStatus'),
   localStatus: document.getElementById('localStatus'),
   lastError: document.getElementById('lastError'),
   configPanel: document.getElementById('configPanel'),
@@ -281,6 +286,9 @@ function applyConfig(cfg) {
   if (els.testingForceSource) {
     els.testingForceSource.value = cfg.testing?.forceSource ?? 'off';
   }
+  if (els.updatesVersionsDirectory) {
+    els.updatesVersionsDirectory.value = cfg.updates?.versionsDirectory ?? '';
+  }
 
   setDirty(false);
 }
@@ -321,6 +329,9 @@ function getFormConfig() {
     xpressionConnector: {
       enabled: !!els.xpressionEnabled?.checked,
       outputPath: els.xpressionOutputPath?.value.trim()
+    },
+    updates: {
+      versionsDirectory: els.updatesVersionsDirectory?.value.trim() || ''
     },
     testing: {
       forceSource: els.testingForceSource?.value || 'off'
@@ -363,6 +374,15 @@ function getReceiverFormConfig() {
     companionBaseUrl: els.companionBaseUrl?.value?.trim() || 'http://127.0.0.1:8000',
     relayTimeoutMs: Number(els.relayTimeoutMs?.value || 8000)
   };
+}
+
+function applyUpdatePublisherInfo(info) {
+  if (els.coreVersion) {
+    els.coreVersion.textContent = info?.currentVersion || '-';
+  }
+  if (els.versionsDirectory) {
+    els.versionsDirectory.textContent = info?.versionsDirectory || '-';
+  }
 }
 
 function setAuthModalVisible(show) {
@@ -498,6 +518,9 @@ async function saveConfigFromForm() {
   ]);
   applyConfig(saved);
   applyReceiverConfig(savedReceiver);
+  if (window.api?.getUpdatePublisherInfo) {
+    window.api.getUpdatePublisherInfo().then(applyUpdatePublisherInfo);
+  }
   setDirty(false);
   return { saved, savedReceiver };
 }
@@ -513,6 +536,10 @@ Promise.all([
     if (status?.valid) refreshIntellishiftVehicles();
   });
 });
+
+if (window.api?.getUpdatePublisherInfo) {
+  window.api.getUpdatePublisherInfo().then(applyUpdatePublisherInfo);
+}
 
 if (window.api?.onToggleConfig) {
   window.api.onToggleConfig((show) => setConfigVisible(!!show));
@@ -541,6 +568,19 @@ configInputs.forEach((el) => {
 if (els.saveBanner) {
   els.saveBanner.addEventListener('click', async () => {
     await saveConfigFromForm();
+  });
+}
+
+if (els.openVersionsDirectoryBtn) {
+  els.openVersionsDirectoryBtn.addEventListener('click', async () => {
+    if (els.versionsDirectoryStatus) els.versionsDirectoryStatus.textContent = 'Opening...';
+    const result = await window.api.openUpdatesDirectory();
+    if (els.versionsDirectoryStatus) {
+      els.versionsDirectoryStatus.textContent = result?.ok ? 'Opened' : (result?.message || 'Unable to open folder');
+    }
+    if (window.api?.getUpdatePublisherInfo) {
+      window.api.getUpdatePublisherInfo().then(applyUpdatePublisherInfo);
+    }
   });
 }
 

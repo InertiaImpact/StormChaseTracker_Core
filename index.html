@@ -228,6 +228,27 @@
         </div>
       </div>
 
+      <div class="config-section">
+        <h3>Version Publishing</h3>
+        <div class="grid">
+          <label class="full">Versions Directory
+            <input id="updatesVersionsDirectory" type="text" placeholder="Blank uses the default Core versions folder" />
+          </label>
+          <div class="stat">
+            <span>Core Version</span>
+            <strong id="coreVersion">-</strong>
+          </div>
+          <div class="stat">
+            <span>Versions Directory</span>
+            <strong id="versionsDirectory">-</strong>
+          </div>
+        </div>
+        <div class="actions">
+          <button id="openVersionsDirectoryBtn" type="button">Open Versions Directory</button>
+          <span id="versionsDirectoryStatus" class="action-status"></span>
+        </div>
+      </div>
+
       <!-- ========== TESTING OVERRIDES ========== -->
       <div class="config-section">
         <h3>Testing Overrides</h3>
