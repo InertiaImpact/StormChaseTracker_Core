@@ -15,6 +15,7 @@ const els = {
   localDataUrl: document.getElementById('localDataUrl'),
   localFailoverSeconds: document.getElementById('localFailoverSeconds'),
   localRecheckSeconds: document.getElementById('localRecheckSeconds'),
+  webListenPort: document.getElementById('webListenPort'),
   coreRelayPathPrefix: document.getElementById('coreRelayPathPrefix'),
   edgeRelayBaseUrl: document.getElementById('edgeRelayBaseUrl'),
   edgeRelayPathPrefix: document.getElementById('edgeRelayPathPrefix'),
@@ -54,6 +55,11 @@ const els = {
   authSaveBtn: document.getElementById('authSaveBtn'),
   saveBanner: document.getElementById('saveBanner'),
   saveBtn: document.getElementById('saveBtn'),
+  installedCoreVersion: document.getElementById('installedCoreVersion'),
+  availableCoreVersion: document.getElementById('availableCoreVersion'),
+  coreUpdateStatus: document.getElementById('coreUpdateStatus'),
+  checkCoreUpdateBtn: document.getElementById('checkCoreUpdateBtn'),
+  installCoreUpdateBtn: document.getElementById('installCoreUpdateBtn'),
   coreVersion: document.getElementById('coreVersion'),
   updatesVersionsDirectory: document.getElementById('updatesVersionsDirectory'),
   versionsDirectory: document.getElementById('versionsDirectory'),
@@ -77,6 +83,7 @@ let lastPosition = null;
 let styleSelect = null;
 let currentConfig = null;
 let currentReceiverConfig = null;
+let pendingCoreUpdate = null;
 let intellishiftVehiclesLoaded = false;
 let isDirty = false;
 
@@ -341,6 +348,9 @@ function getFormConfig() {
 
 function applyReceiverConfig(cfg) {
   currentReceiverConfig = cfg || {};
+  if (els.webListenPort) {
+    els.webListenPort.value = currentReceiverConfig.listenPort || 80;
+  }
   if (els.coreRelayPathPrefix) {
     els.coreRelayPathPrefix.value = currentReceiverConfig.coreRelayPathPrefix || '/satellite';
   }
@@ -366,6 +376,7 @@ function applyReceiverConfig(cfg) {
 
 function getReceiverFormConfig() {
   return {
+    listenPort: Number(els.webListenPort?.value || 80),
     coreRelayPathPrefix: els.coreRelayPathPrefix?.value?.trim() || '/satellite',
     edgeRelayBaseUrl: els.edgeRelayBaseUrl?.value?.trim() || '',
     edgeRelayPathPrefix: els.edgeRelayPathPrefix?.value?.trim() || '/satellite',
@@ -377,12 +388,35 @@ function getReceiverFormConfig() {
 }
 
 function applyUpdatePublisherInfo(info) {
+  if (els.installedCoreVersion) {
+    els.installedCoreVersion.textContent = info?.currentVersion || '-';
+  }
   if (els.coreVersion) {
     els.coreVersion.textContent = info?.currentVersion || '-';
   }
   if (els.versionsDirectory) {
     els.versionsDirectory.textContent = info?.versionsDirectory || '-';
   }
+}
+
+function setCoreUpdateStatus(message, isError = false) {
+  if (!els.coreUpdateStatus) return;
+  els.coreUpdateStatus.textContent = message || 'Manual check required';
+  els.coreUpdateStatus.classList.toggle('error-text', !!isError);
+}
+
+function applyCoreUpdateCheck(result) {
+  pendingCoreUpdate = result?.updateAvailable ? result.latest : null;
+  if (els.installedCoreVersion) {
+    els.installedCoreVersion.textContent = result?.currentVersion || '-';
+  }
+  if (els.availableCoreVersion) {
+    els.availableCoreVersion.textContent = result?.latest?.version || '-';
+  }
+  if (els.installCoreUpdateBtn) {
+    els.installCoreUpdateBtn.disabled = !pendingCoreUpdate;
+  }
+  setCoreUpdateStatus(result?.message || 'Update check finished', !result?.ok);
 }
 
 function setAuthModalVisible(show) {
@@ -580,6 +614,44 @@ if (els.openVersionsDirectoryBtn) {
     }
     if (window.api?.getUpdatePublisherInfo) {
       window.api.getUpdatePublisherInfo().then(applyUpdatePublisherInfo);
+    }
+  });
+}
+
+if (els.checkCoreUpdateBtn) {
+  els.checkCoreUpdateBtn.addEventListener('click', async () => {
+    pendingCoreUpdate = null;
+    els.checkCoreUpdateBtn.disabled = true;
+    if (els.installCoreUpdateBtn) els.installCoreUpdateBtn.disabled = true;
+    setCoreUpdateStatus('Checking...', false);
+    try {
+      const result = await window.api.checkForUpdate();
+      applyCoreUpdateCheck(result);
+    } catch (err) {
+      setCoreUpdateStatus(err?.message || 'Update check failed', true);
+    } finally {
+      els.checkCoreUpdateBtn.disabled = false;
+    }
+  });
+}
+
+if (els.installCoreUpdateBtn) {
+  els.installCoreUpdateBtn.addEventListener('click', async () => {
+    if (!pendingCoreUpdate) return;
+    els.checkCoreUpdateBtn.disabled = true;
+    els.installCoreUpdateBtn.disabled = true;
+    setCoreUpdateStatus('Verifying and launching installer...', false);
+    try {
+      const result = await window.api.installUpdate(pendingCoreUpdate);
+      setCoreUpdateStatus(result?.ok ? 'Installer launched; Core is closing...' : (result?.message || 'Install failed'), !result?.ok);
+      if (!result?.ok) {
+        els.checkCoreUpdateBtn.disabled = false;
+        els.installCoreUpdateBtn.disabled = false;
+      }
+    } catch (err) {
+      setCoreUpdateStatus(err?.message || 'Install failed', true);
+      els.checkCoreUpdateBtn.disabled = false;
+      els.installCoreUpdateBtn.disabled = false;
     }
   });
 }

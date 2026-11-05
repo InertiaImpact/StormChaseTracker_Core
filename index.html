@@ -81,6 +81,16 @@
       </div>
 
       <div class="config-section">
+        <h3>Web Server Config</h3>
+        <div class="grid">
+          <label>Web Map / API Listen Port
+            <input id="webListenPort" type="number" min="1" max="65535" placeholder="80" />
+          </label>
+        </div>
+        <p class="hint">The map, API, ingest endpoint, and satellite HTTP relay share this port. Changes take effect when saved.</p>
+      </div>
+
+      <div class="config-section">
         <h3>Satellite Relay Config</h3>
         <div class="grid">
           <label>Core Satellite Path Prefix
@@ -226,6 +236,29 @@
             <input id="webPollIntervalSeconds" type="number" />
           </label>
         </div>
+      </div>
+
+      <div class="config-section">
+        <h3>Application Update</h3>
+        <div class="grid">
+          <div class="stat">
+            <span>Installed Version</span>
+            <strong id="installedCoreVersion">-</strong>
+          </div>
+          <div class="stat">
+            <span>Available Version</span>
+            <strong id="availableCoreVersion">-</strong>
+          </div>
+          <div class="stat full">
+            <span>Status</span>
+            <strong id="coreUpdateStatus">Manual check required</strong>
+          </div>
+        </div>
+        <div class="actions">
+          <button id="checkCoreUpdateBtn" type="button">Check for Update</button>
+          <button id="installCoreUpdateBtn" type="button" disabled>Confirm Update</button>
+        </div>
+        <p class="hint">Core will close after the verified installer opens. Installation always requires this manual confirmation.</p>
       </div>
 
       <div class="config-section">

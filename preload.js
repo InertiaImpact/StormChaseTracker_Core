@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld('api', {
   setReceiverConfig: (cfg) => ipcRenderer.invoke('receiver-set-config', cfg),
   getUpdatePublisherInfo: () => ipcRenderer.invoke('updates-get-publisher-info'),
   openUpdatesDirectory: () => ipcRenderer.invoke('updates-open-directory'),
+  checkForUpdate: () => ipcRenderer.invoke('updates-check'),
+  installUpdate: (asset) => ipcRenderer.invoke('updates-install', asset),
   onStatus: (cb) => ipcRenderer.on('status', (_e, data) => cb(data)),
   onToggleConfig: (cb) => ipcRenderer.on('toggle-config', (_e, show) => cb(show)),
   toggleFullscreen: (enable) => ipcRenderer.invoke('toggle-fullscreen', enable),

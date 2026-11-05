@@ -5,6 +5,7 @@ const http = require('http');
 const net = require('net');
 const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
+const { prepareVerifiedInstaller, sha256FileAsync, updateAssetMatches } = require('./core-update');
 
 const CONFIG_FILE = 'stormchasetracker-core-config.json';
 const RECEIVER_CONFIG_FILE = 'stormchasetracker-core-receiver-config.json';
@@ -12,6 +13,7 @@ const LEGACY_CONFIG_FILE = 'rwmapv2-config.json';
 const LEGACY_RECEIVER_CONFIG_FILE = 'rwmapv2-receiver-config.json';
 const SECRETS_FILE = 'secrets.json';
 const UPDATE_DIR_NAME = 'versions';
+const UPDATE_APP_ID = 'core';
 
 const singleInstanceLock = app.requestSingleInstanceLock();
 if (!singleInstanceLock) {
@@ -139,6 +141,7 @@ let receiverCfg = null;
 let receiverServer = null;
 let receiverTcpServer = null;
 let receiverStatusTimer = null;
+let coreUpdateInstallInFlight = false;
 let pollSeq = 0;
 let currentPollId = null;
 let pollRunning = false;
@@ -148,6 +151,7 @@ const NO_MOVEMENT_THRESHOLD_MS = 30 * 60 * 1000;
 
 const receiverState = {
   listening: false,
+  lastPacketAt: null,
   lastUpdateAt: null,
   firstUpdateAt: null,
   lastPayload: null,
@@ -158,6 +162,7 @@ const receiverState = {
 
 const reverseCache = new Map();
 const reverseGeocodeInflight = new Map();
+const updateHashCache = new Map();
 const intellishiftState = {
   token: null,
   tokenExpiresAt: 0,
@@ -240,10 +245,28 @@ function inferUpdateKind(fileName) {
   return ext.replace(/^\./, '') || 'file';
 }
 
+function isPublishedUpdateFileName(fileName) {
+  const ext = path.extname(String(fileName || '')).toLowerCase();
+  if (!['.exe', '.msi', '.zip'].includes(ext)) return false;
+  if (!inferUpdateAppId(fileName)) return false;
+  return /(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)/.test(String(fileName || ''));
+}
+
 function sha256File(filePath) {
   const hash = crypto.createHash('sha256');
   hash.update(fs.readFileSync(filePath));
   return hash.digest('hex');
+}
+
+function sha256PublishedFile(filePath, stat) {
+  const cacheKey = path.resolve(filePath).toLowerCase();
+  const cached = updateHashCache.get(cacheKey);
+  if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
+    return cached.sha256;
+  }
+  const sha256 = sha256File(filePath);
+  updateHashCache.set(cacheKey, { size: stat.size, mtimeMs: stat.mtimeMs, sha256 });
+  return sha256;
 }
 
 function buildUpdateManifest(hostForUrls) {
@@ -273,22 +296,23 @@ function buildUpdateManifest(hostForUrls) {
     if (!versionMatch) continue;
 
     const filePath = path.join(dir, fileName);
-    let stat = null;
     try {
-      stat = fs.statSync(filePath);
+      const statBefore = fs.statSync(filePath);
+      const sha256 = sha256PublishedFile(filePath, statBefore);
+      const statAfter = fs.statSync(filePath);
+      if (statBefore.size !== statAfter.size || statBefore.mtimeMs !== statAfter.mtimeMs) continue;
+      apps[appId].versions.push({
+        version: versionMatch[1],
+        fileName,
+        sizeBytes: statAfter.size,
+        publishedAt: statAfter.mtime.toISOString(),
+        sha256,
+        kind: inferUpdateKind(fileName),
+        downloadUrl: `${hostForUrls || ''}/api/updates/download?file=${encodeURIComponent(fileName)}`
+      });
     } catch {
       continue;
     }
-
-    apps[appId].versions.push({
-      version: versionMatch[1],
-      fileName,
-      sizeBytes: stat.size,
-      publishedAt: stat.mtime.toISOString(),
-      sha256: sha256File(filePath),
-      kind: inferUpdateKind(fileName),
-      downloadUrl: `${hostForUrls || ''}/api/updates/download?file=${encodeURIComponent(fileName)}`
-    });
   }
 
   for (const appInfo of Object.values(apps)) {
@@ -321,7 +345,8 @@ function resolveUpdateFile(fileName) {
 }
 
 function serveUpdateDownload(parsed, res) {
-  const file = resolveUpdateFile(parsed.searchParams.get('file'));
+  const requestedName = parsed.searchParams.get('file');
+  const file = isPublishedUpdateFileName(requestedName) ? resolveUpdateFile(requestedName) : null;
   if (!file) {
     res.writeHead(404, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     res.end(JSON.stringify({ error: 'update_file_not_found' }));
@@ -339,7 +364,163 @@ function serveUpdateDownload(parsed, res) {
     'Cache-Control': 'no-store',
     'Content-Disposition': `attachment; filename="${file.fileName.replace(/"/g, '')}"`
   });
-  fs.createReadStream(file.filePath).pipe(res);
+  const stream = fs.createReadStream(file.filePath);
+  stream.on('error', (err) => {
+    console.warn(`[updates] Download stream failed for ${file.fileName}: ${err?.message || err}`);
+    if (!res.headersSent) {
+      res.writeHead(500, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ error: 'update_download_failed' }));
+    } else {
+      res.destroy(err);
+    }
+  });
+  res.on('close', () => {
+    if (!stream.destroyed) stream.destroy();
+  });
+  stream.pipe(res);
+}
+
+function pendingUpdateDirectory() {
+  const dir = path.join(app.getPath('userData'), 'pending-update');
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function cleanupPendingCoreUpdates() {
+  const dir = pendingUpdateDirectory();
+  const cutoff = Date.now() - (7 * 24 * 60 * 60 * 1000);
+  let entries = [];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || !/^StormChaseTracker-Core-Update-/i.test(entry.name)) continue;
+    const filePath = path.join(dir, entry.name);
+    try {
+      const stat = fs.statSync(filePath);
+      if (stat.mtimeMs < cutoff) fs.unlinkSync(filePath);
+    } catch { /* ignore stale-file cleanup failures */ }
+  }
+}
+
+async function latestCoreInstaller() {
+  const dir = ensureVersionsDirectory();
+  const candidates = [];
+  let entries = [];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    entries = [];
+  }
+
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const fileName = entry.name;
+    if (path.extname(fileName).toLowerCase() !== '.exe' || inferUpdateAppId(fileName) !== UPDATE_APP_ID) continue;
+    const versionMatch = fileName.match(/(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)/);
+    if (!versionMatch || !/^\d+\.\d+\.\d+$/.test(versionMatch[1])) continue;
+    const filePath = path.join(dir, fileName);
+    try {
+      const stat = fs.statSync(filePath);
+      candidates.push({
+        version: versionMatch[1],
+        fileName,
+        filePath,
+        sizeBytes: stat.size,
+        publishedAt: stat.mtime.toISOString(),
+        kind: 'nsis'
+      });
+    } catch { /* ignore files that disappear during the scan */ }
+  }
+
+  candidates.sort((a, b) => {
+    const byVersion = compareVersions(b.version, a.version);
+    if (byVersion !== 0) return byVersion;
+    return String(b.publishedAt).localeCompare(String(a.publishedAt));
+  });
+  const selected = candidates[0] || null;
+  if (!selected) return { versionsDirectory: dir, latest: null };
+  const { filePath, ...latest } = selected;
+  latest.sha256 = await sha256FileAsync(filePath);
+  const statAfter = await fs.promises.stat(filePath);
+  if (statAfter.size !== selected.sizeBytes || statAfter.mtime.toISOString() !== selected.publishedAt) {
+    throw new Error('The published Core installer changed during verification. Try again after publishing completes.');
+  }
+  return { versionsDirectory: dir, latest };
+}
+
+async function checkForCoreUpdate() {
+  const { versionsDirectory, latest } = await latestCoreInstaller();
+  const currentVersion = app.getVersion();
+
+  if (!latest) {
+    return {
+      ok: true,
+      updateAvailable: false,
+      currentVersion,
+      versionsDirectory,
+      latest: null,
+      message: 'No Core installer is published in the versions directory.'
+    };
+  }
+
+  const updateAvailable = compareVersions(latest.version, currentVersion) > 0;
+  return {
+    ok: true,
+    updateAvailable,
+    currentVersion,
+    versionsDirectory,
+    latest,
+    message: updateAvailable
+      ? `Core version ${latest.version} is available.`
+      : `Core version ${currentVersion} is up to date.`
+  };
+}
+
+async function preparedInstallerPath(asset) {
+  const file = resolveUpdateFile(asset.fileName);
+  if (!file || file.fileName !== asset.fileName) {
+    throw new Error('Published Core installer is no longer available');
+  }
+  if (path.extname(file.fileName).toLowerCase() !== '.exe') {
+    throw new Error('Core self-update requires an NSIS .exe installer');
+  }
+
+  return prepareVerifiedInstaller({
+    sourcePath: file.filePath,
+    asset,
+    pendingDir: pendingUpdateDirectory()
+  });
+}
+
+async function installCoreUpdate(expectedAsset) {
+  if (!app.isPackaged) {
+    throw new Error('Core updates can only be installed from a packaged application');
+  }
+  const check = await checkForCoreUpdate();
+  if (!check.updateAvailable || !check.latest) {
+    throw new Error(check.message || 'No Core update is available');
+  }
+
+  const latest = check.latest;
+  if (!updateAssetMatches(expectedAsset, latest)) {
+    throw new Error('The published Core update changed. Check for updates again before installing.');
+  }
+
+  const installerPath = await preparedInstallerPath(latest);
+  const openResult = await shell.openPath(installerPath);
+  if (openResult) {
+    try { fs.unlinkSync(installerPath); } catch { /* ignore */ }
+    throw new Error(openResult);
+  }
+
+  setTimeout(() => {
+    app.isQuiting = true;
+    app.quit();
+  }, 1000);
+  return { ok: true, installerPath, version: latest.version };
 }
 
 function receiverConfigPath() {
@@ -376,58 +557,117 @@ function normalizeLegacyConfig(parsed) {
   if (!parsed || typeof parsed !== 'object') return parsed;
   const next = { ...parsed };
 
-  next.dataSource = {
-    ...(parsed.dataSource || {}),
-    localDataUrl: parsed.localDataUrl ?? parsed.dataSource?.localDataUrl,
-    localFailoverSeconds: parsed.localFailoverSeconds ?? parsed.dataSource?.localFailoverSeconds,
-    localRecheckSeconds: parsed.localRecheckSeconds ?? parsed.dataSource?.localRecheckSeconds
+  const mergeDefined = (...sources) => {
+    const result = {};
+    for (const source of sources) {
+      if (!source || typeof source !== 'object' || Array.isArray(source)) continue;
+      for (const [key, value] of Object.entries(source)) {
+        if (value !== undefined) result[key] = value;
+      }
+    }
+    return result;
   };
 
-  next.cradlepoint = {
-    ...(parsed.cradlepoint || {}),
-    cloudEnabled: parsed.cradlepoint?.cloudEnabled ?? parsed.cloudEnabled,
-    cloudUrl: parsed.cradlepoint?.cloudUrl ?? parsed.cloudUrl,
-    cloudStaleSeconds: parsed.cradlepoint?.cloudStaleSeconds ?? parsed.cloudStaleSeconds,
-    cloudApiId: parsed.cradlepoint?.cloudApiId ?? parsed.cloudApiId,
-    cloudApiKey: parsed.cradlepoint?.cloudApiKey ?? parsed.cloudApiKey,
-    cloudEcmApiId: parsed.cradlepoint?.cloudEcmApiId ?? parsed.cloudEcmApiId,
-    cloudEcmApiKey: parsed.cradlepoint?.cloudEcmApiKey ?? parsed.cloudEcmApiKey,
-    cloudReferer: parsed.cradlepoint?.cloudReferer ?? parsed.cloudReferer,
-    cloudUserAgent: parsed.cradlepoint?.cloudUserAgent ?? parsed.cloudUserAgent
-  };
+  next.dataSource = mergeDefined(parsed.dataSource, {
+    localDataUrl: parsed.localDataUrl,
+    localFailoverSeconds: parsed.localFailoverSeconds,
+    localRecheckSeconds: parsed.localRecheckSeconds
+  });
 
-  next.geocode = {
-    ...(parsed.geocode || {}),
-    geocodeUrl: parsed.geocodeUrl ?? parsed.geocode?.geocodeUrl,
-    geocodeApiKey: parsed.geocodeApiKey ?? parsed.geocode?.geocodeApiKey
-  };
+  next.cradlepoint = mergeDefined(parsed.cradlepoint, {
+    cloudEnabled: parsed.cloudEnabled,
+    cloudUrl: parsed.cloudUrl,
+    cloudStaleSeconds: parsed.cloudStaleSeconds,
+    cloudApiId: parsed.cloudApiId,
+    cloudApiKey: parsed.cloudApiKey,
+    cloudEcmApiId: parsed.cloudEcmApiId,
+    cloudEcmApiKey: parsed.cloudEcmApiKey,
+    cloudReferer: parsed.cloudReferer,
+    cloudUserAgent: parsed.cloudUserAgent
+  });
 
-  next.xpressionConnector = {
-    ...(parsed.xpressionConnector || {}),
-    enabled: parsed.xpressionConnector?.enabled ?? parsed.xpressionEnabled ?? false,
-    outputPath: parsed.xpressionConnector?.outputPath ?? parsed.xpressionOutputPath
-  };
+  next.geocode = mergeDefined(parsed.geocode, {
+    geocodeUrl: parsed.geocodeUrl,
+    geocodeApiKey: parsed.geocodeApiKey
+  });
 
-  next.testing = {
-    ...(parsed.testing || {}),
-    forceSource: parsed.testing?.forceSource ?? parsed.forceSource ?? 'off'
-  };
+  next.xpressionConnector = mergeDefined(parsed.xpressionConnector, {
+    enabled: parsed.xpressionEnabled,
+    outputPath: parsed.xpressionOutputPath
+  });
 
-  next.updates = {
-    ...(parsed.updates || {}),
-    versionsDirectory: parsed.updates?.versionsDirectory ?? parsed.versionsDirectory ?? ''
-  };
+  next.testing = mergeDefined(parsed.testing, {
+    forceSource: parsed.forceSource
+  });
+
+  next.updates = mergeDefined(parsed.updates, {
+    versionsDirectory: parsed.versionsDirectory
+  });
 
   return next;
+}
+
+function mergeCoreConfig(...sources) {
+  const merged = {
+    ...DEFAULT_CONFIG,
+    dataSource: {
+      ...DEFAULT_CONFIG.dataSource,
+      intellishift: { ...DEFAULT_CONFIG.dataSource.intellishift }
+    },
+    cradlepoint: { ...DEFAULT_CONFIG.cradlepoint },
+    geocode: { ...DEFAULT_CONFIG.geocode },
+    xpressionConnector: { ...DEFAULT_CONFIG.xpressionConnector },
+    testing: { ...DEFAULT_CONFIG.testing },
+    updates: { ...DEFAULT_CONFIG.updates }
+  };
+
+  const nestedKeys = new Set([
+    'dataSource',
+    'cradlepoint',
+    'geocode',
+    'xpressionConnector',
+    'testing',
+    'updates'
+  ]);
+
+  for (const source of sources) {
+    if (!source || typeof source !== 'object' || Array.isArray(source)) continue;
+    for (const [key, value] of Object.entries(source)) {
+      if (!nestedKeys.has(key) && value !== undefined) merged[key] = value;
+    }
+
+    if (source.dataSource && typeof source.dataSource === 'object' && !Array.isArray(source.dataSource)) {
+      const previousIntellishift = merged.dataSource?.intellishift || {};
+      const nextIntellishift = source.dataSource.intellishift;
+      merged.dataSource = {
+        ...merged.dataSource,
+        ...source.dataSource,
+        intellishift: {
+          ...previousIntellishift,
+          ...(nextIntellishift && typeof nextIntellishift === 'object' && !Array.isArray(nextIntellishift)
+            ? nextIntellishift
+            : {})
+        }
+      };
+    }
+
+    for (const key of ['cradlepoint', 'geocode', 'xpressionConnector', 'testing', 'updates']) {
+      const section = source[key];
+      if (!section || typeof section !== 'object' || Array.isArray(section)) continue;
+      merged[key] = { ...merged[key], ...section };
+    }
+  }
+
+  return merged;
 }
 
 function loadConfig() {
   try {
     const raw = fs.readFileSync(configPath(), 'utf8');
     const parsed = normalizeLegacyConfig(JSON.parse(raw));
-    return { ...DEFAULT_CONFIG, ...loadSecrets(), ...parsed };
+    return mergeCoreConfig(loadSecrets(), parsed);
   } catch {
-    return { ...DEFAULT_CONFIG, ...loadSecrets() };
+    return mergeCoreConfig(loadSecrets());
   }
 }
 
@@ -445,10 +685,17 @@ function loadReceiverConfig() {
   try {
     const raw = fs.readFileSync(receiverConfigPath(), 'utf8');
     const parsed = JSON.parse(raw);
-    return { ...DEFAULT_RECEIVER_CONFIG, ...parsed };
+    const merged = { ...DEFAULT_RECEIVER_CONFIG, ...parsed };
+    merged.listenPort = normalizeTcpPort(merged.listenPort, DEFAULT_RECEIVER_CONFIG.listenPort);
+    return merged;
   } catch {
     return { ...DEFAULT_RECEIVER_CONFIG };
   }
+}
+
+function normalizeTcpPort(value, fallback) {
+  const port = Number(value);
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : fallback;
 }
 
 function saveConfig(newCfg) {
@@ -1845,7 +2092,7 @@ function sendStatus() {
 
 function formatReceiverStatus(currentCfg) {
   const now = Date.now();
-  const connected = receiverState.lastUpdateAt && now - receiverState.lastUpdateAt <= 5000;
+  const connected = receiverState.lastPacketAt && now - receiverState.lastPacketAt <= 5000;
   const durationMs = connected && receiverState.firstUpdateAt ? now - receiverState.firstUpdateAt : 0;
   return {
     listening: receiverState.listening,
@@ -1862,6 +2109,7 @@ function formatReceiverStatus(currentCfg) {
     reverseRelayPathPrefix: currentCfg.reverseRelayPathPrefix,
     companionBaseUrl: currentCfg.companionBaseUrl,
     relayTimeoutMs: currentCfg.relayTimeoutMs,
+    lastPacketAt: receiverState.lastPacketAt,
     lastUpdateAt: receiverState.lastUpdateAt,
     durationMs,
     lastSenderIp: receiverState.lastSenderIp,
@@ -1981,7 +2229,11 @@ function startReceiverServer(currentCfg) {
       const parsed = new URL(requestTarget, 'http://127.0.0.1');
       const reqPath = typeof parsed.pathname === 'string' && parsed.pathname.length > 0 ? parsed.pathname : '/';
       const edgeBridgePath = normalizeBridgePath(currentCfg.edgeBridgePath);
-      const requestHost = req.headers.host ? `http://${req.headers.host}` : '';
+      const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+      const requestProtocol = forwardedProto === 'https' ? 'https' : 'http';
+      const forwardedHost = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim();
+      const requestHostName = forwardedHost || String(req.headers.host || '').trim();
+      const requestHost = requestHostName ? `${requestProtocol}://${requestHostName}` : '';
 
       const ingestPath = currentCfg.ingestPath.startsWith('/') ? currentCfg.ingestPath : `/${currentCfg.ingestPath}`;
       const ingestAlt = ingestPath.endsWith('/') ? ingestPath.slice(0, -1) : `${ingestPath}/`;
@@ -2040,6 +2292,7 @@ function startReceiverServer(currentCfg) {
 
     if (req.method === 'GET' && (reqPath === '/api/updates' || reqPath === '/api/updates/manifest')) {
       const manifest = buildUpdateManifest(requestHost);
+      delete manifest.versionsDirectory;
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify(manifest));
       return;
@@ -2134,11 +2387,13 @@ function startReceiverServer(currentCfg) {
             const lastTs = receiverState.lastPayloadTsUnix;
             const isOutOfOrder = tsUnixNumber != null && Number.isFinite(lastTs) && tsUnixNumber < lastTs;
 
-            receiverState.lastUpdateAt = Date.now();
-            if (!receiverState.firstUpdateAt) receiverState.firstUpdateAt = receiverState.lastUpdateAt;
+            const receivedAt = Date.now();
+            receiverState.lastPacketAt = receivedAt;
+            if (!receiverState.firstUpdateAt) receiverState.firstUpdateAt = receivedAt;
             if (isOutOfOrder) {
               console.log(`[ingest] ignoring out-of-order payload ts_unix=${tsUnixNumber} < last=${lastTs}`);
             } else {
+              receiverState.lastUpdateAt = receivedAt;
               receiverState.lastPayload = payload;
               receiverState.lastPayloadTsUnix = tsUnixNumber ?? lastTs ?? null;
             }
@@ -2237,9 +2492,9 @@ function startReceiverServer(currentCfg) {
 
   receiverServer.on('error', (err) => {
     if (err && err.code === 'EACCES') {
-      receiverState.serverError = 'Bind failed (EACCES). Run as Administrator to use port 80.';
+      receiverState.serverError = `Bind failed (EACCES) on port ${currentCfg.listenPort}. Choose a non-privileged port or run as Administrator.`;
     } else if (err && err.code === 'EADDRINUSE') {
-      receiverState.serverError = 'Bind failed (EADDRINUSE). Port already in use.';
+      receiverState.serverError = `Bind failed (EADDRINUSE). Port ${currentCfg.listenPort} is already in use.`;
     } else {
       receiverState.serverError = err && err.message ? err.message : String(err);
     }
@@ -2562,6 +2817,7 @@ app.whenReady().then(() => {
   migrateLegacyConfigFiles();
   cfg = loadConfig();
   ensureVersionsDirectory();
+  cleanupPendingCoreUpdates();
   receiverCfg = loadReceiverConfig();
   createWindow();
   setupTray();
@@ -2573,7 +2829,7 @@ app.whenReady().then(() => {
 
   ipcMain.handle('get-config', () => cfg);
   ipcMain.handle('set-config', (_e, newCfg) => {
-    cfg = { ...cfg, ...newCfg };
+    cfg = mergeCoreConfig(cfg, newCfg);
     saveConfig(cfg);
     startPolling();
     startXpressionWriter(cfg);
@@ -2583,6 +2839,7 @@ app.whenReady().then(() => {
   ipcMain.handle('receiver-get-config', () => receiverCfg);
   ipcMain.handle('receiver-set-config', (_e, newCfg) => {
     receiverCfg = { ...receiverCfg, ...newCfg };
+    receiverCfg.listenPort = normalizeTcpPort(receiverCfg.listenPort, DEFAULT_RECEIVER_CONFIG.listenPort);
     saveReceiverConfig(receiverCfg);
     startReceiverServer(receiverCfg);
     return receiverCfg;
@@ -2597,6 +2854,37 @@ app.whenReady().then(() => {
     const dir = ensureVersionsDirectory();
     const result = await shell.openPath(dir);
     return { ok: !result, message: result || '' };
+  });
+
+  ipcMain.handle('updates-check', async () => {
+    try {
+      return await checkForCoreUpdate();
+    } catch (err) {
+      return {
+        ok: false,
+        updateAvailable: false,
+        currentVersion: app.getVersion(),
+        versionsDirectory: versionsDirectoryPath(),
+        latest: null,
+        message: err && err.message ? err.message : String(err)
+      };
+    }
+  });
+
+  ipcMain.handle('updates-install', async (_e, asset) => {
+    if (coreUpdateInstallInFlight) {
+      return { ok: false, message: 'A Core update installation is already in progress.' };
+    }
+    coreUpdateInstallInFlight = true;
+    try {
+      return await installCoreUpdate(asset);
+    } catch (err) {
+      coreUpdateInstallInFlight = false;
+      return {
+        ok: false,
+        message: err && err.message ? err.message : String(err)
+      };
+    }
   });
 
   ipcMain.handle('intellishift-token-status', async () => {

@@ -59,9 +59,9 @@ Avoid generic names like `Setup.exe`; the server will ignore them because it can
 
 The manifest is generated dynamically from the directory contents. No separate manifest file needs to be edited.
 
-## Client/Edge Update Flow
+## Application Update Flow
 
-Edge and clients do not auto-install updates.
+Core, Edge, and clients do not auto-install updates.
 
 1. In the Edge/client UI, leave `Update Server` blank to auto-detect the server from the existing connection:
    - Edge derives it from the saved send target URL.
@@ -78,6 +78,10 @@ Edge and clients do not auto-install updates.
 4. If a newer version is found, click `Confirm Update`.
 
 The app downloads the installer to its local pending-update directory, verifies the SHA-256 from Core's manifest, launches the installer, and quits.
+
+Core reads its own bucket from the configured Versions Directory instead of downloading through HTTP. It copies the latest published Core installer to its local pending-update directory, verifies the published byte size and SHA-256, launches the installer, and quits. The first Core release containing this workflow must still be installed manually; later releases can use `Check for Update` and `Confirm Update` in Core.
+
+The versions directory and its access controls are the Core updater's trust boundary. Installers are not currently Authenticode-signed, so only trusted operators should have write access to that directory.
 
 ## Safety Notes
 

@@ -38,7 +38,7 @@ function updateStatus(data) {
   els.connected.textContent = data.connected ? 'Yes' : 'No';
   els.senderIp.textContent = data.lastSenderIp || '-';
   els.connDuration.textContent = formatDuration(data.durationMs);
-  els.lastConn.textContent = formatTime(data.lastUpdateAt);
+  els.lastConn.textContent = formatTime(data.lastPacketAt || data.lastUpdateAt);
   els.serverError.textContent = data.serverError || '-';
   els.payload.textContent = data.lastPayload ? JSON.stringify(data.lastPayload, null, 2) : '-';
 

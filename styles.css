@@ -440,6 +440,15 @@ button:hover {
   background: #245ed1;
 }
 
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.error-text {
+  color: #dc2626 !important;
+}
+
 .token-row {
   display: grid;
   grid-template-columns: 1fr auto;
